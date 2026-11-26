@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="240" height="240" role="img" aria-label="VitaDeck">
+  <!-- VitaDeck logo, concept 3E "focus grid with start tile" – same geometry as draw_logo() in src/ui.c -->
+  <title>VitaDeck</title>
+  <rect x="8" y="8" width="46" height="46" rx="10" fill="#2a3846"/>
+  <!-- focus ring around the start tile -->
+  <rect x="60" y="4" width="56" height="56" rx="14" fill="none" stroke="#3d9bff" stroke-width="3"/>
+  <rect x="65" y="9" width="46" height="46" rx="10" fill="#3d9bff"/>
+  <!-- start arrow with rounded tips -->
+  <polygon points="83.5,24.5 83.5,39.5 96.5,32" fill="#06121f" stroke="#06121f" stroke-width="5" stroke-linejoin="round"/>
+  <rect x="8" y="66" width="46" height="46" rx="10" fill="#3a4a5c"/>
+  <rect x="65" y="66" width="46" height="46" rx="10" fill="#2a3846"/>
+</svg>

@@ -1,0 +1,11 @@
+build/
+build-sdk/
+build-win/
+CLAUDE.local.md
+.claude/settings.local.json
+*.o
+*.elf
+*.velf
+*.vpk
+eboot.bin
+param.sfo

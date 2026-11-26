@@ -1,0 +1,1616 @@
+/* VitaDeck – launcher UI (SteamOS-inspired, no third-party branding) */
+#include "platform.h"
+#include "gfx.h"
+#include "stb_image.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <math.h>
+
+/* ---------- palette ---------- */
+#define C_BG     0x0b1016
+#define C_PANEL  0x121b25
+#define C_HEAD   0x0f161e
+#define C_LINE   0x1c2733
+#define C_LINE2  0x22303e
+#define C_TXT    0xe6edf3
+#define C_TXT2   0xb6c2cf
+#define C_MUTE   0x8fa3b8
+#define C_DIM    0x6f8193
+#define C_ACC    0x3d9bff
+#define C_INK    0x06121f
+#define C_CARD   0x18232f
+#define C_BTN    0x1f2b38
+#define C_GREEN  0x6ee7a8
+#define C_STAR   0xffd166
+
+/* shown in the main menu; keep in sync with APP_VER in build.ps1 / CMakeLists.txt / Makefile */
+#define VD_VERSION "v0.3"
+
+/* UI font size: +2 px over the original layout sizes (chip labels <= 10 px stay) */
+#define FS(n) ((n) <= 10 ? (n) : (n) + 2)
+
+#define TILE      112
+#define HOME_PX   128   /* tile pitch on home rows */
+#define ROW_H     178
+#define LIB_COLS  7
+#define LIB_PX    133
+#define LIB_PY    160
+#define MAXA      512
+
+/* ---------- data ---------- */
+typedef struct {
+	char id[16];
+	char title[128];
+	char icon_path[128];
+	int cat;
+	int fav;
+	int hidden;        /* hidden from home and library (except the "Ausgeblendet" tab) */
+	int last;          /* minutes since civil epoch, 0 = never */
+	Img *ic, *ics;     /* hero (128) and tile (112) icon */
+	Img *cv, *cvs;     /* cached placeholder cover, 128 and 112 */
+	int ic_state;      /* 0 = pending, 1 = ok, 2 = none */
+	Img *bg;           /* hero background (HERO_W x HERO_H, darkened, opaque) */
+	int bg_state;      /* 0 = not tried, 1 = loaded, 2 = none */
+	unsigned bg_tick;  /* last use, for evicting old backgrounds */
+} App;
+
+static App *apps;
+static int napps;
+
+typedef struct { const char *title; int n; int idx[MAXA]; } Row;
+static Row rows[5];
+static int nrows;
+static int lib[MAXA], nlib;
+static int lists_dirty = 1;
+
+static const char *TABS[] = { "Alle", "Vita", "Homebrew", "Emulatoren", "Favoriten", "Ausgeblendet" };
+#define TAB_HIDDEN 5
+static int ntabs(void);   /* 6 while any app is hidden, else 5 */
+static const char *SORTS[] = { "A–Z", "Zuletzt gestartet" };
+
+enum { V_BOOT, V_HOME, V_LIB };
+enum { OV_NONE, OV_MENU, OV_QA, OV_CTX, OV_LAUNCH, OV_SET, OV_CONFIRM };
+
+static struct {
+	int view, ov;
+	int boot;
+	int hrow, hcol;
+	int tab, lidx, sort;
+	int mi, qi, ci, ctx_app;
+	int launch_app, launch_frames, launch_prev_last;
+	int bright, vol, vol_ok, bright_ok;
+	char toast[96];
+	uint64_t toast_until;
+	int dirty;
+	float sy, sx[5], ly;  /* animated scroll */
+	int last_minute;
+	int si, set_as, set_ret, plug, confirm;   /* settings overlay */
+	char plug_cfg[32];
+	unsigned perf_us;     /* smoothed time to render a full screen (no overlay cache) */
+	unsigned perf_sec[4]; /* home screen breakdown: header, hero, tiles, footer */
+} S;
+
+static void perf_add(int k, uint64_t *t)
+{
+	uint64_t now = plat_us();
+	unsigned dt = (unsigned)(now - *t);
+	S.perf_sec[k] = S.perf_sec[k] ? (S.perf_sec[k] * 3 + dt) / 4 : dt;
+	*t = now;
+}
+
+/* overlay background cache: base view + dimming, rendered once per overlay */
+static u32 *under;
+static int under_ok;
+
+/* ---------- time helpers ---------- */
+static int days_from_civil(int y, int m, int d)
+{
+	y -= m <= 2;
+	int era = (y >= 0 ? y : y - 399) / 400;
+	int yoe = y - era * 400;
+	int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+	int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	return era * 146097 + doe - 719468;
+}
+
+static int now_minutes(void)
+{
+	Clock c; plat_clock(&c);
+	return days_from_civil(c.year, c.month, c.day) * 1440 + c.hour * 60 + c.minute + 1;
+}
+
+static void fmt_last(int last, char *out, int n)
+{
+	if (!last) { snprintf(out, n, "noch nie gestartet"); return; }
+	int now = now_minutes();
+	int dn = (now - 1) / 1440, dl = (last - 1) / 1440;
+	int hm = (last - 1) % 1440;
+	int diff = dn - dl;
+	if (diff <= 0) snprintf(out, n, "heute, %02d:%02d", hm / 60, hm % 60);
+	else if (diff == 1) snprintf(out, n, "gestern, %02d:%02d", hm / 60, hm % 60);
+	else snprintf(out, n, "vor %d Tagen", diff);
+}
+
+static const char *cat_name(int c)
+{
+	return c == CAT_VITA ? "Vita" : c == CAT_EMU ? "Emulator" : "Homebrew";
+}
+
+/* ---------- persistence ---------- */
+static App *find_app(const char *id)
+{
+	for (int i = 0; i < napps; i++) if (!strcmp(apps[i].id, id)) return &apps[i];
+	return NULL;
+}
+
+static void load_state(void)
+{
+	unsigned char *d; int len;
+	if (plat_read_file(plat_state_path(), &d, &len) < 0) {
+		const char *old = plat_legacy_state_path();
+		if (!old || plat_read_file(old, &d, &len) < 0) return;
+	}
+	char *s = malloc(len + 1);
+	if (!s) { free(d); return; }
+	memcpy(s, d, len); s[len] = 0; free(d);
+	char *line = strtok(s, "\n");
+	while (line) {
+		char id[16]; int fav, last, hid = 0;
+		/* "id fav last [hidden]" – the 4th column is new, older files have 3 */
+		if (sscanf(line, "%15s %d %d %d", id, &fav, &last, &hid) >= 3) {
+			App *a = find_app(id);
+			if (a) { a->fav = fav; a->last = last; a->hidden = hid != 0; }
+		} else if (sscanf(line, "#bright %d", &fav) == 1) {
+			S.bright = fav;
+		}
+		line = strtok(NULL, "\n");
+	}
+	free(s);
+}
+
+static void save_state(void)
+{
+	int cap = 64 + napps * 48, n = 0;
+	char *s = malloc(cap);
+	if (!s) return;
+	n += snprintf(s + n, cap - n, "#bright %d\n", S.bright);
+	for (int i = 0; i < napps; i++)
+		if (apps[i].fav || apps[i].last || apps[i].hidden)
+			n += snprintf(s + n, cap - n, "%s %d %d %d\n", apps[i].id, apps[i].fav, apps[i].last, apps[i].hidden);
+	plat_write_file(plat_state_path(), s, n);
+	free(s);
+}
+
+/* ---------- lists ---------- */
+static int ci_cmp(const char *a, const char *b)
+{
+	for (;; a++, b++) {
+		int ca = tolower((unsigned char)*a), cb = tolower((unsigned char)*b);
+		if (ca != cb || !ca) return ca - cb;
+	}
+}
+
+static int cmp_title(const void *x, const void *y)
+{
+	return ci_cmp(apps[*(const int *)x].title, apps[*(const int *)y].title);
+}
+
+static int cmp_last(const void *x, const void *y)
+{
+	const App *a = &apps[*(const int *)x], *b = &apps[*(const int *)y];
+	if (a->last != b->last) return b->last - a->last;
+	return ci_cmp(a->title, b->title);
+}
+
+static int ntabs(void)
+{
+	for (int i = 0; i < napps; i++) if (apps[i].hidden) return TAB_HIDDEN + 1;
+	return TAB_HIDDEN;
+}
+
+static int lib_filter(int tab, int out[])
+{
+	int n = 0;
+	for (int i = 0; i < napps && n < MAXA; i++) {
+		App *a = &apps[i];
+		int ok = tab == TAB_HIDDEN ? a->hidden :
+		         !a->hidden && (tab == 0 || (tab == 1 && a->cat == CAT_VITA) || (tab == 2 && a->cat == CAT_HOMEBREW) ||
+		                        (tab == 3 && a->cat == CAT_EMU) || (tab == 4 && a->fav));
+		if (ok) out[n++] = i;
+	}
+	return n;
+}
+
+static void rebuild(void)
+{
+	int tmp[MAXA], n;
+	nrows = 0;
+	/* recent */
+	n = 0;
+	for (int i = 0; i < napps && n < MAXA; i++) if (apps[i].last && !apps[i].hidden) tmp[n++] = i;
+	qsort(tmp, n, sizeof(int), cmp_last);
+	Row *r = &rows[nrows];
+	if (n) {
+		r->title = "Zuletzt gestartet";
+		r->n = n > 15 ? 15 : n;
+		memcpy(r->idx, tmp, r->n * sizeof(int));
+		nrows++;
+	}
+	static const char *ttl[] = { NULL, NULL, "Favoriten", "Vita-Spiele", "Homebrew", "Emulatoren" };
+	int tabs[] = { 4, 1, 2, 3 };
+	for (int k = 0; k < 4; k++) {
+		n = lib_filter(tabs[k], tmp);
+		if (!n) continue;
+		qsort(tmp, n, sizeof(int), cmp_title);
+		r = &rows[nrows++];
+		r->title = ttl[k + 2];
+		r->n = n;
+		memcpy(r->idx, tmp, n * sizeof(int));
+	}
+	if (S.tab >= ntabs()) S.tab = 0;   /* "Ausgeblendet" vanishes once it is empty */
+	nlib = lib_filter(S.tab, lib);
+	qsort(lib, nlib, sizeof(int), S.sort ? cmp_last : cmp_title);
+	if (S.hrow >= nrows) S.hrow = nrows ? nrows - 1 : 0;
+	if (nrows && S.hcol >= rows[S.hrow].n) S.hcol = rows[S.hrow].n - 1;
+	if (S.hcol < 0) S.hcol = 0;
+	if (S.lidx >= nlib) S.lidx = nlib ? nlib - 1 : 0;
+	lists_dirty = 0;
+}
+
+static int home_app(void) { return nrows ? rows[S.hrow].idx[S.hcol] : -1; }
+static int lib_app(void) { return nlib ? lib[S.lidx] : -1; }
+
+/* ---------- icons ---------- */
+static void flatten(Img *im, u32 bg)
+{
+	if (!im || im->opaque) return;
+	gfx_begin_target(im->px, im->w, im->h);
+	Img tmp = *im;
+	tmp.px = malloc((size_t)im->w * im->h * 4);
+	if (tmp.px) {
+		memcpy(tmp.px, im->px, (size_t)im->w * im->h * 4);
+		tmp.opaque = 0;
+		gfx_rect(0, 0, im->w, im->h, bg, 255);
+		gfx_img(&tmp, 0, 0, 0, 255);
+		free(tmp.px);
+		im->opaque = 1;
+	}
+	gfx_end_target();
+}
+
+static void load_icon(App *a)
+{
+	a->ic_state = 2;
+	if (!a->icon_path[0]) return;
+	unsigned char *d; int len;
+	if (plat_read_file(a->icon_path, &d, &len) < 0) return;
+	int w, h, n;
+	unsigned char *rgba = stbi_load_from_memory(d, len, &w, &h, &n, 4);
+	free(d);
+	if (!rgba) return;
+	Img *im = img_from_rgba(rgba, w, h);
+	stbi_image_free(rgba);
+	if (!im) return;
+	if (w != 128 || h != 128) { Img *s = img_scaled(im, 128, 128); img_free(im); im = s; }
+	if (!im) return;
+	a->ics = img_scaled(im, TILE, TILE);
+	/* pre-composite onto the card colour (what used to be drawn underneath
+	   every frame), so both images are opaque and blit as plain row copies */
+	flatten(im, rgb(C_CARD));
+	flatten(a->ics, rgb(C_CARD));
+	a->ic = im;
+	a->ic_state = 1;
+}
+
+/* ---------- hero backgrounds (pic0 / LiveArea / own covers) ----------
+   Decoding a 960x544 PNG takes tens of ms on the Vita, so it runs on the
+   background worker. The worker only touches `bgjob`, never `apps`. */
+#define HERO_W  912
+#define HERO_H  208
+#define BG_KEEP 64         /* backgrounds kept in memory (~760 KB each) */
+
+static struct {
+	volatile int state;    /* 0 idle, 1 running, 2 done */
+	char id[16];
+	char paths[8][128];
+	int npaths;
+	Img *out;
+} bgjob;
+static int bg_focus = -1, bg_ok, bg_bad, bg_none, bg_cursor, bg_loaded;
+static uint64_t bg_since;
+static uint64_t last_input;   /* plat_ms() of the last button/touch activity */
+static int icon_cursor;       /* icons are loaded on the UI thread, see pump_icons */
+static unsigned bg_clock;
+
+/* centre-crop to the hero aspect, scale, and darken towards the panel colour
+   (strong on the left behind the text, lighter on the right) */
+static Img *make_hero_bg(const unsigned char *rgba, int w, int h)
+{
+	int cw = w, ch = h, cx = 0, cy = 0;
+	if (w * HERO_H > h * HERO_W) { cw = h * HERO_W / HERO_H; cx = (w - cw) / 2; }
+	else { ch = w * HERO_H / HERO_W; cy = (h - ch) * 2 / 5; }
+	if (cw < 8 || ch < 8) return NULL;
+	Img crop = { .w = cw, .h = ch, .px = malloc((size_t)cw * ch * 4) };
+	if (!crop.px) return NULL;
+	for (int j = 0; j < ch; j++)
+		memcpy(crop.px + j * cw, rgba + ((size_t)(cy + j) * w + cx) * 4, (size_t)cw * 4);
+	Img *im = img_scaled(&crop, HERO_W, HERO_H);
+	free(crop.px);
+	if (!im) return NULL;
+	u32 pc = rgb(C_PANEL);
+	int pr = pc & 0xFF, pg = (pc >> 8) & 0xFF, pb = (pc >> 16) & 0xFF;
+	static int ov[HERO_W];
+	for (int i = 0; i < HERO_W; i++) {
+		float t = (float)i / (HERO_W - 1);
+		float s = t < 0.12f ? 0.f : t > 0.8f ? 1.f : (t - 0.12f) / 0.68f;
+		s = s * s * (3 - 2 * s);
+		ov[i] = (int)(238 - 120 * s);          /* panel overlay strength, 0..256 */
+	}
+	for (int j = 0; j < HERO_H; j++) {
+		u32 *p = im->px + j * HERO_W;
+		for (int i = 0; i < HERO_W; i++) {
+			u32 c = p[i];
+			int a = ov[i], ia = 256 - a;
+			int r = ((c & 0xFF) * ia + pr * a) >> 8;
+			int g = (((c >> 8) & 0xFF) * ia + pg * a) >> 8;
+			int b = (((c >> 16) & 0xFF) * ia + pb * a) >> 8;
+			p[i] = 0xFF000000u | (u32)b << 16 | (u32)g << 8 | (u32)r;
+		}
+	}
+	im->opaque = 1;
+	return im;
+}
+
+static void bg_work(void *arg)
+{
+	(void)arg;
+	Img *res = NULL;
+	/* probing the candidates runs here too: the UI thread must not touch the
+	   file system while this thread reads, or it blocks until the read is done */
+	bgjob.npaths = plat_bg_paths(bgjob.id, bgjob.paths, 8);
+	for (int i = 0; i < bgjob.npaths && !res; i++) {
+		unsigned char *d; int len;
+		if (plat_read_file(bgjob.paths[i], &d, &len) < 0) continue;
+		int w, h, n;
+		unsigned char *rgba = stbi_load_from_memory(d, len, &w, &h, &n, 4);
+		free(d);
+		if (!rgba) continue;   /* e.g. still encrypted: try the next candidate */
+		res = make_hero_bg(rgba, w, h);
+		stbi_image_free(rgba);
+	}
+	bgjob.out = res;
+	__sync_synchronize();
+	bgjob.state = 2;
+}
+
+/* only kicks in with more than BG_KEEP apps: drop the least recently shown */
+static void bg_trim(const App *keep)
+{
+	while (bg_loaded > BG_KEEP) {
+		App *old = NULL;
+		for (int i = 0; i < napps; i++)
+			if (apps[i].bg && &apps[i] != keep && (!old || apps[i].bg_tick < old->bg_tick)) old = &apps[i];
+		if (!old) break;
+		img_free(old->bg); old->bg = NULL; old->bg_state = 0;   /* reload when needed again */
+		bg_loaded--;
+	}
+}
+
+static void bg_start(App *a)
+{
+	snprintf(bgjob.id, sizeof bgjob.id, "%s", a->id);
+	bgjob.npaths = 0;
+	bgjob.out = NULL;
+	bgjob.state = 1;
+	if (plat_job(bg_work, NULL) < 0) bgjob.state = 0;
+}
+
+static void pump_bg(uint64_t now)
+{
+	if (bgjob.state == 2) {
+		__sync_synchronize();
+		App *a = find_app(bgjob.id);
+		if (a && bgjob.out && !a->bg) {
+			a->bg = bgjob.out; a->bg_state = 1; a->bg_tick = ++bg_clock;
+			bg_ok++; bg_loaded++;
+			bg_trim(a);
+		} else {
+			img_free(bgjob.out);
+			if (a && !a->bg) {
+				a->bg_state = 2;
+				if (bgjob.npaths) bg_bad++; else bg_none++;   /* files found but not decodable vs. none */
+			}
+		}
+		bgjob.out = NULL;
+		bgjob.state = 0;
+		S.dirty = 1;
+	}
+	if (bgjob.state != 0 || !napps) return;
+
+	/* 1. the app in the hero, once the focus rests for a moment */
+	if (S.view == V_HOME && nrows) {
+		int ai = home_app();
+		if (ai >= 0 && apps[ai].bg_state == 0) {
+			if (ai != bg_focus) { bg_focus = ai; bg_since = now; return; }
+			if (now - bg_since < 180) return;   /* keep the worker free for it */
+			if (icon_cursor < napps) return;    /* icon reads on the UI thread first */
+			bg_start(&apps[ai]);
+			return;
+		}
+	}
+	/* 2. otherwise preload the rest one by one, as long as they all fit – but only
+	   once the icons are in and the user has not touched anything for a moment,
+	   so the reads never compete with what the UI is doing */
+	if (bg_loaded >= BG_KEEP) return;
+	if (icon_cursor < napps || now - last_input < 600) return;
+	for (int n = 0; n < napps; n++) {
+		int i = (bg_cursor + n) % napps;
+		if (apps[i].bg_state == 0 && !apps[i].hidden) {
+			bg_cursor = (i + 1) % napps;
+			bg_start(&apps[i]);
+			return;
+		}
+	}
+}
+
+static void pump_icons(void)
+{
+	int budget = 2;
+	int f = S.view == V_LIB ? lib_app() : home_app();
+	if (f >= 0 && apps[f].ic_state == 0) { load_icon(&apps[f]); budget--; S.dirty = 1; }
+	while (budget > 0 && icon_cursor < napps) {
+		App *a = &apps[icon_cursor++];
+		if (a->ic_state == 0) { load_icon(a); budget--; S.dirty = 1; }
+	}
+}
+
+/* ---------- toast ---------- */
+static void toast(const char *msg)
+{
+	snprintf(S.toast, sizeof(S.toast), "%s", msg);
+	S.toast_until = plat_ms() + 2200;
+	S.dirty = 1;
+}
+
+/* ---------- hit testing (touch) ---------- */
+enum { H_HTILE = 1, H_HERO, H_TAB, H_LTILE, H_MENU, H_QA, H_CTX, H_BACKDROP, H_BTN, H_SET };
+typedef struct { int x, y, w, h, act, a, b; } Hit;
+static Hit hits[160];
+static int nhits;
+static void hit(int x, int y, int w, int h, int act, int a, int b)
+{
+	if (nhits < 160) hits[nhits++] = (Hit){ x, y, w, h, act, a, b };
+}
+
+/* ---------- drawing helpers ---------- */
+static const u32 PAL[8][3] = {
+	{ 0x2a4a6b, 0x3c6894, 0x16283a }, { 0x5a3b2a, 0x8a5a3a, 0x2c1c13 }, { 0x2e4a3a, 0x4f7a5c, 0x16251c },
+	{ 0x48325c, 0x6e4f8c, 0x22162e }, { 0x5c2f3a, 0x8f4a5a, 0x2a141a }, { 0x2f4f55, 0x4f8088, 0x132326 },
+	{ 0x5a5230, 0x8a7d45, 0x29251a }, { 0x3a3f4a, 0x5b6373, 0x1b1e24 } };
+
+static unsigned hash_s(const char *s) { unsigned h = 7; while (*s) h = h * 31 + (unsigned char)*s++; return h; }
+
+static u32 app_tint(const App *a)
+{
+	if (a->ic) return a->ic->avg;
+	return rgb(PAL[hash_s(a->id) % 8][0]);
+}
+
+static void draw_cover(const App *a, int x, int y, int s, int r)
+{
+	unsigned h = hash_s(a->id);
+	const u32 *p = PAL[h % 8];
+	gfx_rrect(x, y, s, s, r, rgb(p[0]), 255);
+	gfx_push_clip(x, y, s, s);
+	gfx_circle(x + s * (0.2f + (h % 60) / 100.f), y + s * (0.25f + ((h >> 6) % 30) / 100.f), s * 0.33f, rgb(p[1]), 255);
+	gfx_tri(x - 4, y + s * 0.72f, x + s + 4, y + s * 0.5f, x + s + 4, y + s + 4, rgb(p[2]), 255);
+	gfx_tri(x - 4, y + s * 0.72f, x + s + 4, y + s + 4, x - 4, y + s + 4, rgb(p[2]), 255);
+	gfx_pop_clip();
+	char ini[3] = { 0 };
+	int k = 0;
+	for (const char *t = a->title; *t && k < 2; t++)
+		if (isalnum((unsigned char)*t) && (t == a->title || t[-1] == ' ')) ini[k++] = (char)toupper((unsigned char)*t);
+	if (!k) { ini[0] = a->title[0]; }
+	int fs = s * 30 / 100;
+	int tw = text_w(FONT_BOLD, fs, ini);
+	text(FONT_BOLD, fs, x + (s - tw) / 2, y + (s - text_lineh(FONT_BOLD, fs)) / 2, ini, rgb(C_TXT), 230);
+}
+
+static void star(float cx, float cy, float r, u32 c)
+{
+	float px[10], py[10];
+	for (int i = 0; i < 10; i++) {
+		float ang = -1.5707963f + i * 0.6283185f;
+		float rr = (i & 1) ? r * 0.45f : r;
+		px[i] = cx + cosf(ang) * rr; py[i] = cy + sinf(ang) * rr;
+	}
+	for (int i = 0; i < 10; i++) {
+		int j = (i + 1) % 10;
+		gfx_tri(cx, cy, px[i], py[i], px[j], py[j], c, 255);
+	}
+}
+
+/* render the placeholder cover once into an image (square; corners are rounded by gfx_img) */
+static Img *make_cover(const App *a, int s)
+{
+	Img *im = malloc(sizeof(Img));
+	if (!im) return NULL;
+	im->w = im->h = s;
+	im->px = malloc((size_t)s * s * 4);
+	if (!im->px) { free(im); return NULL; }
+	im->avg = rgb(PAL[hash_s(a->id) % 8][0]);
+	im->opaque = 1;   /* blend() always writes alpha 255 */
+	gfx_begin_target(im->px, s, s);
+	draw_cover(a, 0, 0, s, 0);
+	gfx_end_target();
+	return im;
+}
+
+static Img *cover_img(App *a, int s)
+{
+	Img **slot = s == TILE ? &a->cvs : s == 128 ? &a->cv : NULL;
+	if (!slot) return NULL;
+	if (!*slot) *slot = make_cover(a, s);
+	return *slot;
+}
+
+static void draw_icon_or_cover(App *a, int x, int y, int s, int r)
+{
+	const Img *im = a->ic_state == 1 ? (s == TILE ? a->ics : (s == 128 ? a->ic : NULL)) : NULL;
+	if (im) {
+		gfx_img(im, x, y, r, 255);   /* already composited onto C_CARD */
+	} else if ((im = cover_img(a, s))) {
+		gfx_img(im, x, y, r, 255);
+	} else draw_cover(a, x, y, s, r);
+}
+
+static void draw_tile(int ai, int x, int y, int focused)
+{
+	App *a = &apps[ai];
+	if (focused) gfx_rrect(x - 4, y - 4, TILE + 8, TILE + 8, 14, rgb(C_ACC), 255);
+	draw_icon_or_cover(a, x, y, TILE, 10);
+	if (a->fav) {
+		gfx_circle(x + TILE - 13, y + 13, 10, rgb(C_BG), 200);
+		star(x + TILE - 13, y + 13.5f, 7, rgb(C_STAR));
+	}
+	text_fit(focused ? FONT_BOLD : FONT_REG, FS(12), x, y + TILE + 8, TILE, a->title, rgb(focused ? C_TXT : C_TXT2), 255);
+}
+
+/* controller glyphs */
+enum { G_X, G_O, G_TRI, G_SQ, G_L, G_R, G_START, G_SELECT, G_LR };
+static const char *GLBL[] = { "", "", "", "", "L", "R", "START", "SELECT", "←→" };
+
+static int glyph(int x, int y, int g, u32 bg, u32 fg)
+{
+	if (g <= G_SQ) {
+		float cx = x + 10, cy = y + 10;
+		gfx_circle(cx, cy, 10, bg, 255);
+		if (g == G_X) { gfx_line(cx - 4.5f, cy - 4.5f, cx + 4.5f, cy + 4.5f, 2, fg, 255); gfx_line(cx + 4.5f, cy - 4.5f, cx - 4.5f, cy + 4.5f, 2, fg, 255); }
+		else if (g == G_O) gfx_ring(cx, cy, 5, 2, fg, 255);
+		else if (g == G_TRI) { gfx_line(cx, cy - 5.5f, cx + 5.5f, cy + 4, 2, fg, 255); gfx_line(cx + 5.5f, cy + 4, cx - 5.5f, cy + 4, 2, fg, 255); gfx_line(cx - 5.5f, cy + 4, cx, cy - 5.5f, 2, fg, 255); }
+		else { gfx_line(cx - 5, cy - 5, cx + 5, cy - 5, 2, fg, 255); gfx_line(cx + 5, cy - 5, cx + 5, cy + 5, 2, fg, 255); gfx_line(cx + 5, cy + 5, cx - 5, cy + 5, 2, fg, 255); gfx_line(cx - 5, cy + 5, cx - 5, cy - 5, 2, fg, 255); }
+		return 20;
+	}
+	int tw = text_w(FONT_BOLD, FS(10), GLBL[g]);
+	int w = tw + 12 < 22 ? 22 : tw + 12;
+	gfx_rrect(x, y, w, 20, 6, bg, 255);
+	text(FONT_BOLD, FS(10), x + (w - tw) / 2, y + 4, GLBL[g], fg, 255);
+	return w;
+}
+
+static int glyph_w(int g) { return g <= G_SQ ? 20 : (text_w(FONT_BOLD, FS(10), GLBL[g]) + 12 < 22 ? 22 : text_w(FONT_BOLD, FS(10), GLBL[g]) + 12); }
+
+static const unsigned GBTN[] = { B_X, B_O, B_TRI, B_SQ, B_L, B_R, B_START, B_SELECT, 0 };
+
+typedef struct { int g; const char *t; } Hint;
+
+static void footer(const char *info, const Hint *h, int n)
+{
+	gfx_rect(0, SCR_H - 36, SCR_W, 36, rgb(C_HEAD), 255);
+	gfx_rect(0, SCR_H - 36, SCR_W, 1, rgb(C_LINE), 255);
+	int total = 0;
+	for (int i = 0; i < n; i++) total += glyph_w(h[i].g) + 6 + text_w(FONT_REG, FS(12), h[i].t) + (i ? 18 : 0);
+	int x = SCR_W - 20 - total, y = SCR_H - 28;
+	if (info) text_fit(FONT_REG, FS(12), 20, y + 3, x - 40, info, rgb(C_MUTE), 255);
+	for (int i = 0; i < n; i++) {
+		if (i) x += 18;
+		int x0 = x;
+		x += glyph(x, y, h[i].g, rgb(C_TXT), rgb(C_BG)) + 6;
+		x += text(FONT_REG, FS(12), x, y + 3, h[i].t, rgb(C_TXT2), 255);
+		hit(x0 - 6, SCR_H - 36, x - x0 + 12, 36, H_BTN, GBTN[h[i].g], 0);
+	}
+}
+
+static void battery_icon(int x, int y, int pct, int chg)
+{
+	u32 c = rgb(C_TXT2);
+	gfx_line(x + 1, y + 1, x + 21, y + 1, 1.5f, c, 255);
+	gfx_line(x + 21, y + 1, x + 21, y + 11, 1.5f, c, 255);
+	gfx_line(x + 21, y + 11, x + 1, y + 11, 1.5f, c, 255);
+	gfx_line(x + 1, y + 11, x + 1, y + 1, 1.5f, c, 255);
+	gfx_rect(x + 23, y + 4, 2, 5, c, 255);
+	int fw = pct * 16 / 100;
+	if (fw < 1) fw = 1;
+	gfx_rect(x + 3, y + 3, fw, 7, rgb(pct <= 15 ? 0xff7a6b : C_GREEN), 255);
+	if (chg) {
+		gfx_tri(x + 12, y - 1, x + 7, y + 7, x + 12, y + 6, rgb(C_TXT), 255);
+		gfx_tri(x + 10, y + 13, x + 15, y + 5, x + 10, y + 6, rgb(C_TXT), 255);
+	}
+}
+
+static void header(const char *title)
+{
+	gfx_rect(0, 0, SCR_W, 40, rgb(C_HEAD), 255);
+	gfx_rect(0, 39, SCR_W, 1, rgb(C_LINE), 255);
+	text(FONT_BOLD, FS(15), 20, 11, title, rgb(C_TXT), 255);
+	Clock c; plat_clock(&c);
+	char buf[32];
+	snprintf(buf, sizeof buf, "%02d:%02d", c.hour, c.minute);
+	int x = SCR_W - 20 - text_w(FONT_BOLD, FS(14), buf);
+	text(FONT_BOLD, FS(14), x, 12, buf, rgb(C_TXT), 255);
+	int chg = 0, pct = plat_battery(&chg);
+	if (pct >= 0) {
+		snprintf(buf, sizeof buf, "%d %%", pct);
+		x -= 18 + text_w(FONT_REG, FS(13), buf);
+		text(FONT_REG, FS(13), x, 13, buf, rgb(C_TXT2), 255);
+		battery_icon(x - 32, 14, pct, chg);
+	}
+}
+
+/* simple stroke icons, 18px box */
+enum { I_HOME, I_LIB, I_RELOAD, I_MOON, I_POWER, I_EXIT, I_GEAR };
+static void icon(int x, int y, int k, u32 c)
+{
+	float t = 2;
+	switch (k) {
+	case I_HOME:
+		gfx_line(x + 2, y + 8, x + 9, y + 2, t, c, 255); gfx_line(x + 9, y + 2, x + 16, y + 8, t, c, 255);
+		gfx_line(x + 4, y + 7, x + 4, y + 16, t, c, 255); gfx_line(x + 14, y + 7, x + 14, y + 16, t, c, 255);
+		gfx_line(x + 4, y + 16, x + 14, y + 16, t, c, 255);
+		break;
+	case I_LIB:
+		gfx_line(x + 3, y + 2, x + 3, y + 16, t, c, 255); gfx_line(x + 8, y + 2, x + 8, y + 16, t, c, 255);
+		gfx_line(x + 12, y + 3, x + 16, y + 15, t, c, 255); gfx_line(x + 1, y + 16, x + 17, y + 16, t, c, 255);
+		break;
+	case I_RELOAD:
+		gfx_ring(x + 9, y + 9, 6.5f, t, c, 255);
+		gfx_rect(x + 9, y + 1, 8, 8, rgb(C_PANEL), 255);
+		gfx_tri(x + 9, y, x + 9, y + 7, x + 14, y + 3.5f, c, 255);
+		break;
+	case I_MOON:
+		gfx_circle(x + 9, y + 9, 7.5f, c, 255);
+		gfx_circle(x + 13, y + 6, 6.5f, rgb(C_PANEL), 255);
+		break;
+	case I_POWER:
+		gfx_ring(x + 9, y + 10, 6.5f, t, c, 255);
+		gfx_rect(x + 6, y + 1, 6, 7, rgb(C_PANEL), 255);
+		gfx_line(x + 9, y + 1, x + 9, y + 9, t, c, 255);
+		break;
+	case I_EXIT:
+		gfx_line(x + 8, y + 2, x + 2, y + 2, t, c, 255); gfx_line(x + 2, y + 2, x + 2, y + 16, t, c, 255);
+		gfx_line(x + 2, y + 16, x + 8, y + 16, t, c, 255); gfx_line(x + 7, y + 9, x + 17, y + 9, t, c, 255);
+		gfx_line(x + 13, y + 5, x + 17, y + 9, t, c, 255); gfx_line(x + 13, y + 13, x + 17, y + 9, t, c, 255);
+		break;
+	case I_GEAR:   /* ring with 8 teeth */
+		for (int k = 0; k < 8; k++) {
+			float a = k * 0.7853982f, ca = cosf(a), sa = sinf(a);
+			gfx_line(x + 9 + ca * 5.5f, y + 9 + sa * 5.5f, x + 9 + ca * 8.2f, y + 9 + sa * 8.2f, 2.6f, c, 255);
+		}
+		gfx_ring(x + 9, y + 9, 5, t, c, 255);
+		break;
+	}
+}
+
+/* ---------- logo (concept 3E: focus grid with start tile) ---------- */
+#define L(v) ((v) * k)
+static void draw_logo(float x, float y, float size, u32 bg)
+{
+	float k = size / 120.f;
+	int r10 = (int)(L(10) + 0.5f);
+	gfx_rrect((int)(x + L(8)), (int)(y + L(8)), (int)L(46), (int)L(46), r10, rgb(0x2a3846), 255);
+	/* focus ring: outer accent, inner background */
+	gfx_rrect((int)(x + L(58.5f)), (int)(y + L(2.5f)), (int)L(59), (int)L(59), (int)(L(15.5f) + 0.5f), rgb(C_ACC), 255);
+	gfx_rrect((int)(x + L(61.5f)), (int)(y + L(5.5f)), (int)L(53), (int)L(53), (int)(L(12.5f) + 0.5f), bg, 255);
+	gfx_rrect((int)(x + L(65)), (int)(y + L(9)), (int)L(46), (int)L(46), r10, rgb(C_ACC), 255);
+	/* start arrow with rounded tips */
+	float ax = x + L(83.5f), ay = y + L(24.5f), bx = x + L(83.5f), by = y + L(39.5f), cx = x + L(96.5f), cy = y + L(32);
+	u32 ink = rgb(C_INK);
+	gfx_tri(ax, ay, bx, by, cx, cy, ink, 255);
+	float th = L(5);
+	gfx_line(ax, ay, bx, by, th, ink, 255);
+	gfx_line(bx, by, cx, cy, th, ink, 255);
+	gfx_line(cx, cy, ax, ay, th, ink, 255);
+	gfx_rrect((int)(x + L(8)), (int)(y + L(66)), (int)L(46), (int)L(46), r10, rgb(0x3a4a5c), 255);
+	gfx_rrect((int)(x + L(65)), (int)(y + L(66)), (int)L(46), (int)L(46), r10, rgb(0x2a3846), 255);
+}
+#undef L
+
+static int wordmark_w(int size)
+{
+	return text_w(FONT_WM, size, "Vita") + text_w(FONT_WM_BOLD, size, "Deck");
+}
+
+static int wordmark(int x, int y, int size, u32 c)
+{
+	int w = text(FONT_WM, size, x, y, "Vita", c, 255);
+	return w + text(FONT_WM_BOLD, size, x + w, y, "Deck", c, 255);
+}
+
+/* ---------- screens ---------- */
+static void draw_boot(void)
+{
+	gfx_clear(rgb(C_BG));
+	int ls = 96, ww = wordmark_w(44);
+	int total = ls + 22 + ww;
+	int x = (SCR_W - total) / 2, y = SCR_H / 2 - ls / 2 - 24;
+	draw_logo(x, y, ls, rgb(C_BG));
+	wordmark(x + ls + 22, y + (ls - text_lineh(FONT_WM, 44)) / 2, 44, rgb(C_TXT));
+	const char *s = "Apps werden geladen …";
+	text(FONT_REG, FS(13), (SCR_W - text_w(FONT_REG, FS(13), s)) / 2, y + ls + 40, s, rgb(C_MUTE), 255);
+}
+
+/* home: header (0..40) + hero (52..52+HERO_H) end above the rows at HOME_TOP.
+   The hero content (laid out for 156 px) is centred vertically via HERO_DY. */
+#define HERO_Y     52
+#define HERO_DY    ((HERO_H - 156) / 2)
+#define HOME_TOP   (HERO_Y + HERO_H + 8)
+#define HERO_BTN_X (24 + 162)
+#define HERO_BTN_Y (HERO_Y + HERO_DY + 106)
+#define TOP_KEYN   12
+static u32 *topbuf;
+static int top_ok, top_keyv[TOP_KEYN];
+
+static void top_key(int *k)
+{
+	int ai = home_app(), chg = 0;
+	const App *a = &apps[ai];
+	Clock c; plat_clock(&c);
+	k[0] = ai; k[1] = a->fav; k[2] = a->last; k[3] = a->ic_state;
+	k[4] = S.hrow; k[5] = nrows; k[6] = (int)hash_s(nrows ? rows[S.hrow].title : "");
+	k[7] = c.hour * 60 + c.minute;
+	k[8] = plat_battery(&chg); k[9] = chg;
+	k[10] = (int)hash_s(a->id);
+	k[11] = a->bg != NULL;
+}
+
+static void draw_hero(int ai)
+{
+	App *a = &apps[ai];
+	int x = 24, y = HERO_Y, w = HERO_W, h = HERO_H;
+	u32 tint = app_tint(a);
+	u32 dark = rgb(C_PANEL);
+	/* mix tint 45% into panel */
+	{
+		u32 t = tint, p = dark;
+		u32 r = ((t & 0xFF) * 45 + (p & 0xFF) * 55) / 100;
+		u32 g = (((t >> 8) & 0xFF) * 45 + ((p >> 8) & 0xFF) * 55) / 100;
+		u32 b = (((t >> 16) & 0xFF) * 45 + ((p >> 16) & 0xFF) * 55) / 100;
+		tint = 0xFF000000u | (b << 16) | (g << 8) | r;
+	}
+	if (a->bg) {
+		a->bg_tick = ++bg_clock;
+		gfx_img(a->bg, x, y, 12, 255);   /* already cropped + darkened */
+	} else {
+		gfx_rrect(x, y, w, h, 12, dark, 255);
+		gfx_rrect(x, y, 30, h, 12, tint, 255);
+		gfx_hgrad(x + 14, y, 520, h, tint, dark);
+	}
+	draw_icon_or_cover(a, x + 14, y + (h - 128) / 2, 128, 12);
+	y += HERO_DY;   /* text block below is laid out for the original 156 px */
+	int tx = x + 162;
+	const char *eb = S.hrow < nrows ? rows[S.hrow].title : "";
+	if (S.hrow == 0 && a->last && nrows && rows[0].title[0] == 'Z') eb = "Weiterspielen";
+	text(FONT_BOLD, FS(12), tx, y + 18, eb, rgb(C_MUTE), 255);
+	text_fit(FONT_BOLD, FS(26), tx, y + 36, w - 180, a->title, rgb(C_TXT), 255);
+	char last[48], meta[160];
+	fmt_last(a->last, last, sizeof last);
+	snprintf(meta, sizeof meta, "%s%s   ·   %s   ·   %s", a->last ? "Zuletzt gestartet: " : "", a->last ? last : "Noch nie gestartet", cat_name(a->cat), a->id);
+	text_fit(FONT_REG, FS(13), tx, y + 76, w - 180, meta, rgb(C_TXT2), 255);
+	int by = y + 106;
+	gfx_rrect(tx, by, 136, 36, 8, rgb(C_ACC), 255);
+	glyph(tx + 12, by + 8, G_X, rgb(C_INK), rgb(C_ACC));
+	text(FONT_BOLD, FS(15), tx + 40, by + 9, "Starten", rgb(C_INK), 255);
+	hit(HERO_BTN_X, HERO_BTN_Y, 136, 36, H_HERO, 0, 0);
+	int hx = tx + 156;
+	hx += glyph(hx, by + 8, G_TRI, rgb(C_TXT), rgb(C_BG)) + 6;
+	hx += text(FONT_REG, FS(12), hx, by + 11, "Optionen", rgb(C_TXT2), 255) + 18;
+	hx += glyph(hx, by + 8, G_SQ, rgb(C_TXT), rgb(C_BG)) + 6;
+	text(FONT_REG, FS(12), hx, by + 11, a->fav ? "Favorit entfernen" : "Favorit", rgb(C_TXT2), 255);
+}
+
+static void draw_home(void)
+{
+	uint64_t t = plat_us();
+	if (nrows) {   /* napps > 0 but nrows == 0 when every app is hidden */
+		/* header + hero only change with focus, favourites, clock or battery;
+		   while the rows scroll they are restored from a cache */
+		int key[TOP_KEYN];
+		top_key(key);
+		if (top_ok && !memcmp(key, top_keyv, sizeof key)) {
+			memcpy(gfx_buffer(), topbuf, SCR_W * HOME_TOP * 4);
+			gfx_rect(0, HOME_TOP, SCR_W, SCR_H - HOME_TOP, rgb(C_BG), 255);
+			hit(HERO_BTN_X, HERO_BTN_Y, 136, 36, H_HERO, 0, 0);
+			perf_add(0, &t);
+		} else {
+			gfx_clear(rgb(C_BG));
+			header("Startseite");
+			perf_add(0, &t);
+			draw_hero(home_app());
+			perf_add(1, &t);
+			if (!topbuf) topbuf = malloc(SCR_W * HOME_TOP * 4);
+			if (topbuf) {
+				memcpy(topbuf, gfx_buffer(), SCR_W * HOME_TOP * 4);
+				memcpy(top_keyv, key, sizeof key);
+				top_ok = 1;
+			}
+		}
+		t = plat_us();
+	} else {
+		gfx_clear(rgb(C_BG));
+		header("Startseite");
+	}
+	if (!nrows) {
+		const char *m1 = napps ? "Alle Apps sind ausgeblendet" : "Keine Apps gefunden";
+		const char *m2 = napps ? "Wieder einblenden: Bibliothek (R) → Tab „Ausgeblendet“ → △"
+		                       : "In ux0:app wurden keine installierten Apps erkannt.";
+		text(FONT_BOLD, FS(20), (SCR_W - text_w(FONT_BOLD, FS(20), m1)) / 2, 220, m1, rgb(C_TXT), 255);
+		text(FONT_REG, FS(14), (SCR_W - text_w(FONT_REG, FS(14), m2)) / 2, 254, m2, rgb(C_MUTE), 255);
+		Hint hs[] = { { G_R, "Bibliothek" }, { G_START, "Menü" }, { G_SELECT, "Schnellzugriff" } };
+		if (napps) footer(NULL, hs, 3); else footer(NULL, hs + 1, 2);
+		return;
+	}
+	int top = HOME_TOP;
+	gfx_push_clip(0, top, SCR_W, SCR_H - 36 - top);
+	for (int r = 0; r < nrows; r++) {
+		int ry = top + 6 + r * ROW_H - (int)S.sy;
+		if (ry > SCR_H || ry + ROW_H < top) continue;
+		text(FONT_BOLD, FS(14), 24, ry, rows[r].title, rgb(r == S.hrow ? C_TXT : C_DIM), 255);
+		for (int c = 0; c < rows[r].n; c++) {
+			int tx = 28 + c * HOME_PX - (int)S.sx[r];
+			if (tx > SCR_W || tx + TILE < 0) continue;
+			int foc = r == S.hrow && c == S.hcol;
+			draw_tile(rows[r].idx[c], tx, ry + 28, foc);
+			hit(tx, ry + 28, TILE, TILE + 26, H_HTILE, r, c);
+		}
+	}
+	gfx_pop_clip();
+	perf_add(2, &t);
+	Hint hs[] = { { G_X, "Starten" }, { G_TRI, "Optionen" }, { G_R, "Bibliothek" }, { G_START, "Menü" }, { G_SELECT, "Schnellzugriff" } };
+	footer(NULL, hs, 5);
+	perf_add(3, &t);
+}
+
+static void draw_lib(void)
+{
+	gfx_clear(rgb(C_BG));
+	header("Bibliothek");
+	gfx_rect(0, 87, SCR_W, 1, rgb(C_LINE), 255);
+	int x = 20, y = 54;
+	x += glyph(x, y, G_L, rgb(C_TXT), rgb(C_BG)) + 8;
+	int tmp[MAXA];
+	for (int t = 0, nt = ntabs(); t < nt; t++) {
+		char lbl[48];
+		snprintf(lbl, sizeof lbl, "%s · %d", TABS[t], lib_filter(t, tmp));
+		int on = t == S.tab;
+		int tw = text_w(on ? FONT_BOLD : FONT_REG, FS(13), lbl);
+		if (on) gfx_rrect(x, 46, tw + 26, 32, 6, rgb(C_ACC), 255);
+		text(on ? FONT_BOLD : FONT_REG, FS(13), x + 13, 54, lbl, rgb(on ? C_INK : C_TXT2), 255);
+		hit(x, 46, tw + 26, 32, H_TAB, t, 0);
+		x += tw + 30;
+	}
+	glyph(x + 2, y, G_R, rgb(C_TXT), rgb(C_BG));
+	char sl[64];
+	snprintf(sl, sizeof sl, "Sortierung: %s", SORTS[S.sort]);
+	text(FONT_REG, FS(12), SCR_W - 20 - text_w(FONT_REG, FS(12), sl), 56, sl, rgb(C_MUTE), 255);
+
+	int top = 88;
+	if (!nlib) {
+		const char *m = S.tab == 4 ? "Noch keine Favoriten. Drück □ auf einer App, dann taucht sie hier auf."
+		              : S.tab == TAB_HIDDEN ? "Keine ausgeblendeten Apps."
+		                                    : "In dieser Kategorie ist nichts installiert.";
+		text(FONT_REG, FS(15), (SCR_W - text_w(FONT_REG, FS(15), m)) / 2, 260, m, rgb(C_MUTE), 255);
+	} else {
+		gfx_push_clip(0, top, SCR_W, SCR_H - 36 - top);
+		for (int i = 0; i < nlib; i++) {
+			int r = i / LIB_COLS, c = i % LIB_COLS;
+			int tx = 28 + c * LIB_PX, ty = top + 18 + r * LIB_PY - (int)S.ly;
+			if (ty > SCR_H || ty + LIB_PY < top) continue;
+			draw_tile(lib[i], tx, ty, i == S.lidx);
+			hit(tx, ty, TILE, TILE + 26, H_LTILE, i, 0);
+		}
+		gfx_pop_clip();
+	}
+	char info[200] = { 0 };
+	int ai = lib_app();
+	if (ai >= 0) {
+		char last[48];
+		fmt_last(apps[ai].last, last, sizeof last);
+		snprintf(info, sizeof info, "%s · %s · %s%s", apps[ai].title, cat_name(apps[ai].cat), apps[ai].last ? "zuletzt " : "", last);
+	}
+	Hint hs[] = { { G_X, "Starten" }, { G_SQ, "Favorit" }, { G_TRI, "Optionen" }, { G_O, "Zurück" } };
+	footer(ai >= 0 ? info : NULL, hs, 4);
+}
+
+static const char *MENU[] = { "Startseite", "Bibliothek", "App-Liste neu laden", "Einstellungen", "Standby", "Neustart", "Launcher beenden" };
+static const int MENU_IC[] = { I_HOME, I_LIB, I_RELOAD, I_GEAR, I_MOON, I_POWER, I_EXIT };
+#define NMENU 7
+#define MENU_SEP 4   /* divider before Standby */
+
+/* darkens the base view; the result is cached in `under` so later frames
+   of the overlay only need a memcpy instead of redrawing the whole screen */
+static void dim(void)
+{
+	if (!under_ok) {
+		gfx_rect(0, 0, SCR_W, SCR_H, rgb(0x000000), 170);
+		if (!under) under = malloc(SCR_W * SCR_H * 4);
+		if (under) { memcpy(under, gfx_buffer(), SCR_W * SCR_H * 4); under_ok = 1; }
+	}
+	hit(0, 0, SCR_W, SCR_H, H_BACKDROP, 0, 0);
+}
+
+static void draw_menu(void)
+{
+	dim();
+	gfx_rect(0, 0, 280, SCR_H, rgb(C_PANEL), 255);
+	gfx_rect(280, 0, 1, SCR_H, rgb(C_LINE2), 255);
+	hit(0, 0, 281, SCR_H, 0, 0, 0);
+	draw_logo(18, 16, 42, rgb(C_PANEL));
+	wordmark(72, 17, 20, rgb(C_TXT));
+	text(FONT_REG, FS(12), 72, 42, VD_VERSION, rgb(C_MUTE), 255);
+	gfx_rect(20, 72, 240, 1, rgb(C_LINE2), 255);
+	int y = 84;
+	for (int i = 0; i < NMENU; i++) {
+		if (i == MENU_SEP) { y += 10; gfx_rect(20, y - 6, 240, 1, rgb(C_LINE2), 255); }
+		int on = i == S.mi;
+		if (on) gfx_rrect(12, y, 256, 44, 8, rgb(C_ACC), 255);
+		icon(26, y + 13, MENU_IC[i], rgb(on ? C_INK : C_TXT2));
+		text(on ? FONT_BOLD : FONT_REG, FS(14), 58, y + 13, MENU[i], rgb(on ? C_INK : C_TXT), 255);
+		hit(12, y, 256, 44, H_MENU, i, 0);
+		y += 46;
+	}
+	Hint hs[] = { { G_X, "Auswählen" }, { G_O, "Schließen" } };
+	footer(NULL, hs, 2);
+}
+
+/* ---------- settings (return/autostart plugin) ---------- */
+enum { CF_INSTALL = 1, CF_UNINSTALL };
+#define NSET 3
+#define SET_W 440
+
+static void settings_open(void)
+{
+	plat_plugin_cfg_load(&S.set_as, &S.set_ret);
+	S.plug = plat_plugin_state(S.plug_cfg, sizeof S.plug_cfg);
+	S.si = 0;
+	S.ov = OV_SET;
+}
+
+static void toggle_sw(int x, int y, int on)
+{
+	gfx_rrect(x, y, 44, 24, 12, rgb(on ? C_ACC : 0x2a3846), 255);
+	gfx_circle(on ? x + 32 : x + 12, y + 12, 9, rgb(on ? 0xffffff : C_MUTE), 255);
+}
+
+static void draw_set(void)
+{
+	dim();
+	gfx_rect(0, 0, SET_W, SCR_H, rgb(C_PANEL), 255);
+	gfx_rect(SET_W, 0, 1, SCR_H, rgb(C_LINE2), 255);
+	hit(0, 0, SET_W + 1, SCR_H, 0, 0, 0);
+	icon(22, 22, I_GEAR, rgb(C_TXT));
+	text(FONT_BOLD, FS(15), 52, 21, "Einstellungen", rgb(C_TXT), 255);
+	gfx_rect(20, 60, SET_W - 40, 1, rgb(C_LINE2), 255);
+
+	static const char *lbl[NSET] = { "Nach Spielende zurück", "Beim Start öffnen", "Rückkehr-Plugin" };
+	static const char *sub[NSET] = { "Öffnet VitaDeck wieder, wenn das Spiel endet",
+	                                 "VitaDeck startet nach dem Einschalten der Vita", NULL };
+	int y = 74;
+	for (int i = 0; i < NSET; i++) {
+		int on = i == S.si, h = 70;
+		gfx_rrect(16, y, SET_W - 32, h, 10, rgb(C_CARD), 255);
+		if (on) { gfx_rrect(14, y - 2, SET_W - 28, h + 4, 12, rgb(C_ACC), 255); gfx_rrect(16, y, SET_W - 32, h, 10, rgb(C_CARD), 255); }
+		text(FONT_BOLD, FS(14), 30, y + 12, lbl[i], rgb(C_TXT), 255);
+		if (i < 2) {
+			text_fit(FONT_REG, FS(11), 30, y + 40, SET_W - 130, sub[i], rgb(C_MUTE), 255);
+			toggle_sw(SET_W - 76, y + 23, i == 0 ? S.set_ret : S.set_as);
+		} else {
+			const char *st = S.plug == PLUG_INSTALLED ? "installiert" :
+			                 S.plug == PLUG_OTHER_PATH ? "eingetragen (anderer Pfad)" : "nicht installiert";
+			char b[96];
+			snprintf(b, sizeof b, "Status: %s", st);
+			text_fit(FONT_REG, FS(11), 30, y + 40, SET_W - 170, b, rgb(S.plug == PLUG_INSTALLED ? C_GREEN : C_MUTE), 255);
+			const char *act = S.plug == PLUG_INSTALLED ? "Entfernen" : "Installieren";
+			int aw = text_w(FONT_BOLD, FS(13), act) + 28;
+			gfx_rrect(SET_W - 32 - aw, y + 19, aw, 32, 8, rgb(S.plug == PLUG_INSTALLED ? C_BTN : C_ACC), 255);
+			text(FONT_BOLD, FS(13), SET_W - 32 - aw + 14, y + 26, act, rgb(S.plug == PLUG_INSTALLED ? C_TXT : C_INK), 255);
+		}
+		hit(16, y, SET_W - 32, h, H_SET, i, 0);
+		y += h + 12;
+	}
+	/* the switches only do something once the plugin is loaded */
+	const char *note = S.plug == PLUG_NONE ? "Die Schalter wirken erst mit installiertem Plugin."
+	                                       : "Plugin-Änderungen wirken nach einem Neustart der Vita.";
+	text(FONT_REG, FS(11), 22, y + 4, note, rgb(C_TXT2), 255);
+	text(FONT_REG, FS(11), 22, y + 26, "Notausgang beim Einschalten: SELECT = kein Autostart,", rgb(C_MUTE), 255);
+	text(FONT_REG, FS(11), 22, y + 44, "L = taiHEN lädt keine Plugins.", rgb(C_MUTE), 255);
+	char b[64];
+	snprintf(b, sizeof b, "Konfiguration: %s", S.plug_cfg);
+	text(FONT_REG, FS(11), 22, y + 66, b, rgb(C_DIM), 255);
+	Hint hs[] = { { G_X, S.si == 2 ? "Ausführen" : "Umschalten" }, { G_O, "Zurück" } };
+	footer(NULL, hs, 2);
+}
+
+static void draw_confirm(void)
+{
+	gfx_rect(0, 0, SCR_W, SCR_H, rgb(0x000000), 150);
+	hit(0, 0, SCR_W, SCR_H, H_BACKDROP, 0, 0);
+	int w = 560, h = 200, x = (SCR_W - w) / 2, y = (SCR_H - h) / 2 - 20;
+	gfx_rrect(x, y, w, h, 12, rgb(C_PANEL), 255);
+	hit(x, y, w, h, 0, 0, 0);
+	int inst = S.confirm == CF_INSTALL;
+	text(FONT_BOLD, FS(16), x + 24, y + 20, inst ? "Rückkehr-Plugin installieren?" : "Rückkehr-Plugin entfernen?", rgb(C_TXT), 255);
+	char l1[96], l2[96];
+	if (inst) snprintf(l1, sizeof l1, "Kopiert vdreturn.suprx nach ur0:tai/ und trägt es unter *main ein.");
+	else snprintf(l1, sizeof l1, "Entfernt den Eintrag und die Datei aus ur0:tai/.");
+	snprintf(l2, sizeof l2, "Geändert wird %s, vorher wird eine Sicherung", S.plug_cfg);
+	text_fit(FONT_REG, FS(12), x + 24, y + 62, w - 48, l1, rgb(C_TXT2), 255);
+	text_fit(FONT_REG, FS(12), x + 24, y + 86, w - 48, l2, rgb(C_TXT2), 255);
+	text_fit(FONT_REG, FS(12), x + 24, y + 108, w - 48, "angelegt (config.txt.vitadeck.bak). Wirkt nach einem Neustart.", rgb(C_TXT2), 255);
+	text_fit(FONT_REG, FS(11), x + 24, y + 146, w - 48, "Falls etwas hängt: beim Einschalten L halten, dann lädt taiHEN keine Plugins.", rgb(C_MUTE), 255);
+	Hint hs[] = { { G_X, inst ? "Installieren" : "Entfernen" }, { G_O, "Abbrechen" } };
+	footer(NULL, hs, 2);
+}
+
+static void settings_act(int i)
+{
+	S.si = i;
+	if (i == 0 || i == 1) {
+		if (i == 0) S.set_ret = !S.set_ret; else S.set_as = !S.set_as;
+		if (plat_plugin_cfg_save(S.set_as, S.set_ret) < 0) toast("Einstellung konnte nicht gespeichert werden");
+	} else {
+		S.confirm = S.plug == PLUG_INSTALLED ? CF_UNINSTALL : CF_INSTALL;
+		S.ov = OV_CONFIRM;
+	}
+	S.dirty = 1;
+}
+
+static void confirm_act(void)
+{
+	int inst = S.confirm == CF_INSTALL;
+	int r = inst ? plat_plugin_install() : plat_plugin_uninstall();
+	S.plug = plat_plugin_state(S.plug_cfg, sizeof S.plug_cfg);
+	S.ov = OV_SET;
+	char m[96];
+	if (r == 0) snprintf(m, sizeof m, inst ? "Plugin installiert · wirkt nach Neustart" : "Plugin entfernt · wirkt nach Neustart");
+	else if (r == -1) snprintf(m, sizeof m, "Plugin-Datei fehlt in VitaDeck");
+	else if (r == -2) snprintf(m, sizeof m, "%s nicht gefunden, nichts geändert", S.plug_cfg);
+	else if (r == -3) snprintf(m, sizeof m, "Sicherung fehlgeschlagen, nichts geändert");
+	else if (r == -5) snprintf(m, sizeof m, "Prüfung fehlgeschlagen! Sicherung: config.txt.vitadeck.bak");
+	else snprintf(m, sizeof m, "Fehler %d, Sicherung: config.txt.vitadeck.bak", r);
+	toast(m);
+	S.dirty = 1;
+}
+
+static void slider(int x, int y, int w, int pct, int focus)
+{
+	gfx_rrect(x, y, w, 8, 4, rgb(0x2a3846), 255);
+	int fw = w * pct / 100;
+	if (fw > 0) gfx_rrect(x, y, fw < 8 ? 8 : fw, 8, 4, rgb(C_ACC), 255);
+	gfx_circle(x + fw, y + 4, focus ? 9 : 7, rgb(0xffffff), 255);
+}
+
+static void draw_qa(void)
+{
+	dim();
+	int px = SCR_W - 380;
+	gfx_rect(px, 0, 380, SCR_H, rgb(C_PANEL), 255);
+	gfx_rect(px - 1, 0, 1, SCR_H, rgb(C_LINE2), 255);
+	hit(px, 0, 380, SCR_H, 0, 0, 0);
+	text(FONT_BOLD, FS(15), px + 20, 20, "Schnellzugriff", rgb(C_TXT), 255);
+	int y = 56;
+	const char *lbl[] = { "Helligkeit", "Lautstärke" };
+	int val[] = { S.bright, S.vol_ok ? S.vol * 100 / 30 : 0 };
+	int ok[] = { S.bright_ok, S.vol_ok };
+	for (int i = 0; i < 2; i++) {
+		int on = i == S.qi;
+		gfx_rrect(px + 20, y, 340, 70, 10, rgb(C_CARD), 255);
+		if (on) {
+			gfx_rrect(px + 18, y - 2, 344, 74, 12, rgb(C_ACC), 255);
+			gfx_rrect(px + 20, y, 340, 70, 10, rgb(C_CARD), 255);
+		}
+		text(FONT_REG, FS(13), px + 34, y + 12, lbl[i], rgb(C_TXT2), 255);
+		char v[32];
+		if (ok[i]) snprintf(v, sizeof v, "%d %%", val[i]); else snprintf(v, sizeof v, "nicht verfügbar");
+		text(FONT_REG, FS(13), px + 346 - text_w(FONT_REG, FS(13), v), y + 12, v, rgb(C_TXT2), 255);
+		slider(px + 34, y + 44, 312, ok[i] ? val[i] : 0, on);
+		hit(px + 20, y, 340, 70, H_QA, i, 0);
+		y += 84;
+	}
+	/* info card */
+	gfx_rrect(px + 20, y, 340, 134, 10, rgb(C_CARD), 255);
+	int chg = 0, pct = plat_battery(&chg);
+	char b[128];
+	if (pct >= 0) snprintf(b, sizeof b, "Akku %d %%%s", pct, chg ? " · lädt" : "");
+	else snprintf(b, sizeof b, "Akku: unbekannt");
+	text(FONT_BOLD, FS(14), px + 34, y + 14, b, rgb(C_TXT), 255);
+	snprintf(b, sizeof b, "%d Apps · Hintergründe: %d ok, %d unlesbar, %d ohne", napps, bg_ok, bg_bad, bg_none);
+	text(FONT_REG, FS(13), px + 34, y + 40, b, rgb(C_TXT2), 255);
+	text(FONT_REG, FS(12), px + 34, y + 62, plat_job_threaded() ? "Einstellungen gelten systemweit. · Lader: Thread"
+	                                                             : "Einstellungen gelten systemweit. · Lader: inline", rgb(C_MUTE), 255);
+#define MS(v) (v) / 1000, (v) % 1000 / 100
+	snprintf(b, sizeof b, "Bildaufbau: %u,%u ms + Übertragung %u,%u ms", MS(S.perf_us), MS(plat_present_us));
+	text(FONT_REG, FS(12), px + 34, y + 84, b, rgb(C_MUTE), 255);
+	snprintf(b, sizeof b, "Kopf %u,%u · Hero %u,%u · Kacheln %u,%u · Fuß %u,%u",
+	         MS(S.perf_sec[0]), MS(S.perf_sec[1]), MS(S.perf_sec[2]), MS(S.perf_sec[3]));
+	text(FONT_REG, FS(12), px + 34, y + 104, b, rgb(C_MUTE), 255);
+#undef MS
+	Hint hs[] = { { G_LR, "Ändern" }, { G_O, "Schließen" } };
+	footer(NULL, hs, 2);
+}
+
+static Img *ctx_img;          /* 48 px icon for the context menu */
+static const Img *ctx_src;
+
+enum { CA_LAUNCH, CA_FAV, CA_UNRECENT, CA_HIDE, CA_SORT };
+#define CTX_MAX 5
+
+static int ctx_items(const App *a, const char *out[], int act[])
+{
+	int n = 0;
+	out[n] = "Starten"; act[n++] = CA_LAUNCH;
+	out[n] = a->fav ? "Aus Favoriten entfernen" : "Zu Favoriten hinzufügen"; act[n++] = CA_FAV;
+	if (a->last && !a->hidden) { out[n] = "Aus „Zuletzt gestartet“ entfernen"; act[n++] = CA_UNRECENT; }
+	out[n] = a->hidden ? "Einblenden" : "Ausblenden"; act[n++] = CA_HIDE;
+	if (S.view == V_LIB) { out[n] = S.sort ? "Sortieren: A–Z" : "Sortieren: Zuletzt gestartet"; act[n++] = CA_SORT; }
+	return n;
+}
+
+static void draw_ctx(void)
+{
+	dim();
+	App *a = &apps[S.ctx_app];
+	const char *it[CTX_MAX];
+	int act[CTX_MAX];
+	int n = ctx_items(a, it, act);
+	int w = 380, h = 84 + n * 46, x = (SCR_W - w) / 2, y = (SCR_H - h) / 2 - 10;
+	gfx_rrect(x, y, w, h, 12, rgb(C_PANEL), 255);
+	hit(x, y, w, h, 0, 0, 0);
+	const Img *src = a->ic_state == 1 && a->ic ? a->ic : cover_img(a, 128);
+	if (!src) draw_cover(a, x + 16, y + 14, 48, 8);
+	else {
+		if (ctx_src != src) { img_free(ctx_img); ctx_img = img_scaled(src, 48, 48); ctx_src = src; }
+		gfx_rrect(x + 16, y + 14, 48, 48, 8, rgb(C_CARD), 255);
+		gfx_img(ctx_img, x + 16, y + 14, 8, 255);
+	}
+	text_fit(FONT_BOLD, FS(16), x + 76, y + 18, w - 92, a->title, rgb(C_TXT), 255);
+	text(FONT_REG, FS(12), x + 76, y + 42, a->id, rgb(C_MUTE), 255);
+	int iy = y + 76;
+	for (int i = 0; i < n; i++) {
+		int on = i == S.ci;
+		if (on) gfx_rrect(x + 10, iy, w - 20, 42, 8, rgb(C_ACC), 255);
+		text(on ? FONT_BOLD : FONT_REG, FS(14), x + 24, iy + 12, it[i], rgb(on ? C_INK : C_TXT), 255);
+		hit(x + 10, iy, w - 20, 42, H_CTX, i, 0);
+		iy += 46;
+	}
+	Hint hs[] = { { G_X, "Auswählen" }, { G_O, "Schließen" } };
+	footer(NULL, hs, 2);
+}
+
+static void draw_launch(void)
+{
+	App *a = &apps[S.launch_app];
+	gfx_rect(0, 0, SCR_W, SCR_H, rgb(0x000000), 220);
+	int s = 128, x = (SCR_W - s) / 2, y = SCR_H / 2 - 100;
+	draw_icon_or_cover(a, x, y, s, 14);
+	char t[160];
+	snprintf(t, sizeof t, "Starte %s …", a->title);
+	int tw = text_w(FONT_BOLD, FS(18), t);
+	if (tw > 860) tw = 860;
+	text_fit(FONT_BOLD, FS(18), (SCR_W - tw) / 2, y + s + 22, 860, t, rgb(C_TXT), 255);
+}
+
+static void draw_toast(void)
+{
+	if (!S.toast[0]) return;
+	int tw = text_w(FONT_REG, FS(13), S.toast);
+	int w = tw + 36, x = (SCR_W - w) / 2, y = SCR_H - 36 - 52;
+	gfx_rrect(x, y, w, 38, 8, rgb(0x2f3e4e), 255);
+	gfx_rrect(x + 1, y + 1, w - 2, 36, 7, rgb(C_BTN), 255);
+	text(FONT_REG, FS(13), x + 18, y + 11, S.toast, rgb(C_TXT), 255);
+}
+
+static void draw(void)
+{
+	nhits = 0;
+	if (S.view == V_BOOT) { draw_boot(); return; }
+	int cached = (S.ov >= OV_MENU && S.ov <= OV_CTX) || S.ov == OV_SET || S.ov == OV_CONFIRM;
+	if (!cached) under_ok = 0;
+	if (cached && under_ok) {
+		memcpy(gfx_buffer(), under, SCR_W * SCR_H * 4);   /* base + dim from cache */
+	} else {
+		uint64_t t0 = plat_us();
+		if (S.view == V_LIB) draw_lib(); else draw_home();
+		unsigned dt = (unsigned)(plat_us() - t0);
+		S.perf_us = S.perf_us ? (S.perf_us * 3 + dt) / 4 : dt;
+	}
+	if (S.ov == OV_MENU) draw_menu();
+	else if (S.ov == OV_QA) draw_qa();
+	else if (S.ov == OV_CTX) draw_ctx();
+	else if (S.ov == OV_LAUNCH) draw_launch();
+	else if (S.ov == OV_SET) draw_set();
+	else if (S.ov == OV_CONFIRM) { draw_set(); draw_confirm(); }
+	draw_toast();
+}
+
+/* ---------- actions ---------- */
+static void launch(int ai)
+{
+	if (ai < 0) return;
+	S.launch_prev_last = apps[ai].last;
+	apps[ai].last = now_minutes();
+	save_state();
+	lists_dirty = 1;
+	S.launch_app = ai;
+	S.launch_frames = 0;
+	S.ov = OV_LAUNCH;
+	S.dirty = 1;
+}
+
+static void toggle_fav(int ai)
+{
+	if (ai < 0) return;
+	int keep = S.view == V_LIB ? ai : -1;
+	apps[ai].fav = !apps[ai].fav;
+	save_state();
+	rebuild();
+	if (keep >= 0) for (int i = 0; i < nlib; i++) if (lib[i] == keep) S.lidx = i;
+	toast(apps[ai].fav ? "Zu Favoriten hinzugefügt" : "Aus Favoriten entfernt");
+}
+
+static void free_apps(void)
+{
+	for (int i = 0; i < napps; i++) {
+		img_free(apps[i].ic); img_free(apps[i].ics);
+		img_free(apps[i].cv); img_free(apps[i].cvs);
+		img_free(apps[i].bg);
+	}
+	bg_focus = -1;   /* a running background job is matched by id when it finishes */
+	bg_ok = bg_bad = bg_none = bg_cursor = bg_loaded = 0;
+	img_free(ctx_img); ctx_img = NULL; ctx_src = NULL;
+	under_ok = 0;
+	top_ok = 0;
+	free(apps);
+	apps = NULL; napps = 0;
+}
+
+void ui_scan(void)
+{
+	free_apps();
+	PlatApp *pa = NULL;
+	int n = plat_scan_apps(&pa);
+	if (n > MAXA) n = MAXA;
+	apps = calloc(n > 0 ? n : 1, sizeof(App));
+	for (int i = 0; i < n; i++) {
+		snprintf(apps[i].id, sizeof apps[i].id, "%s", pa[i].id);
+		snprintf(apps[i].title, sizeof apps[i].title, "%s", pa[i].title);
+		snprintf(apps[i].icon_path, sizeof apps[i].icon_path, "%s", pa[i].icon_path);
+		apps[i].cat = pa[i].cat;
+	}
+	napps = n < 0 ? 0 : n;
+	free(pa);
+	icon_cursor = 0;
+	load_state();
+	rebuild();
+}
+
+static void menu_act(int i)
+{
+	S.ov = OV_NONE;
+	switch (i) {
+	case 0: S.view = V_HOME; break;
+	case 1: S.view = V_LIB; break;
+	case 2: ui_scan(); { char m[64]; snprintf(m, sizeof m, "%d Apps gefunden", napps); toast(m); } break;
+	case 3: settings_open(); break;
+	case 4: plat_standby(); break;
+	case 5: plat_reboot(); break;
+	case 6: plat_exit(); break;
+	}
+	S.dirty = 1;
+}
+
+static void qa_adjust(int d)
+{
+	if (S.qi == 0) {
+		int v = S.bright + d * 10;
+		S.bright = v < 10 ? 10 : v > 100 ? 100 : v;
+		S.bright_ok = plat_set_brightness(S.bright) >= 0;
+		save_state();
+	} else if (S.vol_ok) {
+		int v = S.vol + d;
+		S.vol = v < 0 ? 0 : v > 30 ? 30 : v;
+		plat_set_volume(S.vol);
+	}
+	S.dirty = 1;
+}
+
+static void lib_toggle_sort(int keep_app)
+{
+	S.sort = !S.sort;
+	rebuild();
+	for (int i = 0; i < nlib; i++) if (lib[i] == keep_app) S.lidx = i;
+	char m[64];
+	snprintf(m, sizeof m, "Sortierung: %s", SORTS[S.sort]);
+	toast(m);
+}
+
+static void ctx_act(int i)
+{
+	App *a = &apps[S.ctx_app];
+	const char *it[CTX_MAX];
+	int act[CTX_MAX];
+	int n = ctx_items(a, it, act);
+	S.ov = OV_NONE;
+	S.dirty = 1;
+	if (i < 0 || i >= n) return;
+	switch (act[i]) {
+	case CA_LAUNCH: launch(S.ctx_app); break;
+	case CA_FAV: toggle_fav(S.ctx_app); break;
+	case CA_UNRECENT: a->last = 0; save_state(); rebuild(); toast("Aus „Zuletzt gestartet“ entfernt"); break;
+	case CA_HIDE: {
+		int keep = S.lidx;
+		a->hidden = !a->hidden;
+		save_state();
+		rebuild();
+		if (S.view == V_LIB) { S.lidx = keep < nlib ? keep : (nlib ? nlib - 1 : 0); }
+		toast(a->hidden ? "Ausgeblendet · wiederfinden unter Bibliothek → „Ausgeblendet“" : "Wieder eingeblendet");
+		break;
+	}
+	case CA_SORT: lib_toggle_sort(S.ctx_app); break;
+	}
+}
+
+static void press(unsigned b)
+{
+	S.dirty = 1;
+	if (S.ov == OV_LAUNCH) return;
+	if (S.ov == OV_CONFIRM) {
+		if (b == B_X) confirm_act();
+		else if (b == B_O) S.ov = OV_SET;
+		return;
+	}
+	if (S.ov == OV_SET) {
+		if (b == B_UP) S.si = S.si > 0 ? S.si - 1 : 0;
+		else if (b == B_DOWN) S.si = S.si < NSET - 1 ? S.si + 1 : NSET - 1;
+		else if (b == B_X) settings_act(S.si);
+		else if ((b == B_LEFT || b == B_RIGHT) && S.si < 2) settings_act(S.si);
+		else if (b == B_O) { S.ov = OV_MENU; S.mi = 3; }
+		else if (b == B_START) S.ov = OV_NONE;
+		return;
+	}
+	if (S.ov == OV_MENU) {
+		if (b == B_UP) S.mi = S.mi > 0 ? S.mi - 1 : 0;
+		else if (b == B_DOWN) S.mi = S.mi < NMENU - 1 ? S.mi + 1 : NMENU - 1;
+		else if (b == B_O || b == B_START) S.ov = OV_NONE;
+		else if (b == B_X) menu_act(S.mi);
+		return;
+	}
+	if (S.ov == OV_QA) {
+		if (b == B_UP) S.qi = 0;
+		else if (b == B_DOWN) S.qi = 1;
+		else if (b == B_LEFT) qa_adjust(-1);
+		else if (b == B_RIGHT || b == B_X) qa_adjust(1);
+		else if (b == B_O || b == B_SELECT) S.ov = OV_NONE;
+		return;
+	}
+	if (S.ov == OV_CTX) {
+		const char *it[CTX_MAX];
+		int act[CTX_MAX];
+		int n = ctx_items(&apps[S.ctx_app], it, act);
+		if (b == B_UP) S.ci = S.ci > 0 ? S.ci - 1 : 0;
+		else if (b == B_DOWN) S.ci = S.ci < n - 1 ? S.ci + 1 : n - 1;
+		else if (b == B_O || b == B_TRI) S.ov = OV_NONE;
+		else if (b == B_X) ctx_act(S.ci);
+		return;
+	}
+	if (b == B_START) { S.ov = OV_MENU; S.mi = S.view == V_LIB ? 1 : 0; return; }
+	if (b == B_SELECT) { S.ov = OV_QA; S.qi = 0; return; }
+
+	if (S.view == V_HOME) {
+		if ((b == B_R || b == B_L) && napps) { S.view = V_LIB; return; }
+		if (!nrows) return;
+		int ai = home_app();
+		switch (b) {
+		case B_LEFT: if (S.hcol > 0) S.hcol--; break;
+		case B_RIGHT: if (S.hcol < rows[S.hrow].n - 1) S.hcol++; break;
+		case B_UP: if (S.hrow > 0) { S.hrow--; if (S.hcol >= rows[S.hrow].n) S.hcol = rows[S.hrow].n - 1; } break;
+		case B_DOWN: if (S.hrow < nrows - 1) { S.hrow++; if (S.hcol >= rows[S.hrow].n) S.hcol = rows[S.hrow].n - 1; } break;
+		case B_X: launch(ai); break;
+		case B_SQ: toggle_fav(ai); break;
+		case B_TRI: S.ov = OV_CTX; S.ctx_app = ai; S.ci = 0; break;
+		case B_R: case B_L: S.view = V_LIB; break;
+		}
+		return;
+	}
+	/* library */
+	int ai = lib_app();
+	switch (b) {
+	case B_L: S.tab = (S.tab + ntabs() - 1) % ntabs(); S.lidx = 0; S.ly = 0; rebuild(); break;
+	case B_R: S.tab = (S.tab + 1) % ntabs(); S.lidx = 0; S.ly = 0; rebuild(); break;
+	case B_LEFT: if (S.lidx > 0) S.lidx--; break;
+	case B_RIGHT: if (S.lidx < nlib - 1) S.lidx++; break;
+	case B_UP: if (S.lidx >= LIB_COLS) S.lidx -= LIB_COLS; break;
+	case B_DOWN:
+		if (nlib && S.lidx / LIB_COLS < (nlib - 1) / LIB_COLS) {
+			S.lidx += LIB_COLS;
+			if (S.lidx > nlib - 1) S.lidx = nlib - 1;
+		}
+		break;
+	case B_X: launch(ai); break;
+	case B_SQ: toggle_fav(ai); break;
+	case B_TRI:   /* options, like on the home screen; sorting lives in there */
+		if (ai >= 0) { S.ov = OV_CTX; S.ctx_app = ai; S.ci = 0; }
+		else lib_toggle_sort(-1);
+		break;
+	case B_O: S.view = V_HOME; break;
+	}
+}
+
+static void tap(int x, int y)
+{
+	for (int i = nhits - 1; i >= 0; i--) {
+		Hit *h = &hits[i];
+		if (x < h->x || y < h->y || x >= h->x + h->w || y >= h->y + h->h) continue;
+		S.dirty = 1;
+		switch (h->act) {
+		case 0: return; /* panel body: swallow */
+		case H_BACKDROP:
+			if (S.ov == OV_CONFIRM) S.ov = OV_SET;
+			else if (S.ov != OV_LAUNCH) S.ov = OV_NONE;
+			return;
+		case H_SET: settings_act(h->a); return;
+		case H_BTN: if (h->a) press(h->a); return;
+		case H_HERO: launch(home_app()); return;
+		case H_HTILE:
+			if (S.hrow == h->a && S.hcol == h->b) launch(home_app());
+			else { S.hrow = h->a; S.hcol = h->b; }
+			return;
+		case H_TAB: S.tab = h->a; S.lidx = 0; S.ly = 0; rebuild(); return;
+		case H_LTILE:
+			if (S.lidx == h->a) launch(lib_app()); else S.lidx = h->a;
+			return;
+		case H_MENU: menu_act(h->a); return;
+		case H_CTX: ctx_act(h->a); return;
+		case H_QA: {
+			S.qi = h->a;
+			int px = SCR_W - 380 + 34;
+			int pct = (x - px) * 100 / 312;
+			pct = pct < 0 ? 0 : pct > 100 ? 100 : pct;
+			if (h->a == 0) { S.bright = pct < 10 ? 10 : (pct + 5) / 10 * 10; S.bright_ok = plat_set_brightness(S.bright) >= 0; save_state(); }
+			else if (S.vol_ok) { S.vol = (pct * 30 + 50) / 100; plat_set_volume(S.vol); }
+			return;
+		}
+		}
+	}
+}
+
+/* ---------- input & frame ---------- */
+static unsigned prev_btn;
+static uint64_t held_since[12], next_rep[12];
+static int touch_was, touch_x0, touch_y0, touch_moved, touch_lx, touch_ly;
+
+static float approach(float v, float t)
+{
+	float d = t - v;
+	if (fabsf(d) < 0.6f) return t;
+	return v + d * 0.32f;
+}
+
+void ui_init(void)
+{
+	memset(&S, 0, sizeof S);
+	S.view = V_BOOT;
+	S.bright = 70;
+	S.bright_ok = 1;
+	int v = plat_get_volume();
+	S.vol_ok = v >= 0;
+	S.vol = v < 0 ? 0 : v;
+	S.dirty = 1;
+	S.last_minute = -1;
+	unsigned char *d; int len;
+	if (plat_read_file(plat_res("Lato-Regular.ttf"), &d, &len) >= 0) font_load(FONT_REG, d);
+	if (plat_read_file(plat_res("Lato-Bold.ttf"), &d, &len) >= 0) font_load(FONT_BOLD, d);
+	if (plat_read_file(plat_res("SpaceGrotesk-Regular.ttf"), &d, &len) >= 0) font_load(FONT_WM, d);
+	if (plat_read_file(plat_res("SpaceGrotesk-Bold.ttf"), &d, &len) >= 0) font_load(FONT_WM_BOLD, d);
+	/* font data stays allocated for the app's lifetime */
+}
+
+int ui_frame(const Input *in, u32 *buf)
+{
+	gfx_init(buf);
+	uint64_t now = plat_ms();
+
+	if (S.view == V_BOOT) {
+		static uint64_t boot_t0;
+		if (S.boot == 0) { draw_boot(); S.boot = 1; boot_t0 = now; return 1; }
+		if (S.boot == 1) { ui_scan(); S.boot = 2; }
+		if (now - boot_t0 < 900) return 0;   /* keep the splash up briefly */
+		S.view = V_HOME;
+		S.dirty = 1;
+	}
+
+	/* launch: show the overlay for a couple of frames, then hand over */
+	if (S.ov == OV_LAUNCH) {
+		int err = 0;
+		if (++S.launch_frames == 3) err = plat_launch(apps[S.launch_app].id);
+		if (err < 0 || S.launch_frames > 90) {
+			if (err < 0) {
+				/* rejected start must not count as "recently launched" */
+				apps[S.launch_app].last = S.launch_prev_last;
+				save_state();
+			}
+			S.ov = OV_NONE;
+			S.dirty = 1;
+			rebuild();
+			char m[64];
+			if (err < 0) snprintf(m, sizeof m, "Start fehlgeschlagen (0x%08X)", (unsigned)err);
+			else snprintf(m, sizeof m, "Start fehlgeschlagen");
+			toast(m);
+		}
+	}
+
+	if (lists_dirty) rebuild();
+
+	/* buttons + stick → directional presses with repeat */
+	unsigned b = in->buttons;
+	if (in->lx < -64) b |= B_LEFT;
+	if (in->lx > 64) b |= B_RIGHT;
+	if (in->ly < -64) b |= B_UP;
+	if (in->ly > 64) b |= B_DOWN;
+	for (int i = 0; i < 12; i++) {
+		unsigned m = 1u << i;
+		if ((b & m) && !(prev_btn & m)) { held_since[i] = now; next_rep[i] = now + 320; press(m); }
+		else if ((b & m) && i < 4 && now >= next_rep[i]) { next_rep[i] = now + 90; press(m); }
+	}
+	prev_btn = b;
+
+	/* touch: tap = down/up with little movement */
+	if (in->touch) {
+		if (!touch_was) { touch_x0 = in->tx; touch_y0 = in->ty; touch_moved = 0; }
+		if (abs(in->tx - touch_x0) > 24 || abs(in->ty - touch_y0) > 24) touch_moved = 1;
+		touch_lx = in->tx; touch_ly = in->ty;
+	} else if (touch_was && !touch_moved) {
+		tap(touch_lx, touch_ly);
+	}
+	touch_was = in->touch;
+	if (b || in->touch) last_input = now;
+
+	/* scroll targets */
+	float ty = S.hrow * (float)ROW_H;
+	float tl = 0;
+	if (nlib) { int r = S.lidx / LIB_COLS; tl = (r > 1 ? r - 1 : 0) * (float)LIB_PY; }
+	float nsy = approach(S.sy, ty), nly = approach(S.ly, tl);
+	if (nsy != S.sy || nly != S.ly) S.dirty = 1;
+	S.sy = nsy; S.ly = nly;
+	for (int r = 0; r < nrows && r < 5; r++) {
+		float tx = S.sx[r];
+		if (r == S.hrow) tx = (S.hcol > 5 ? S.hcol - 5 : 0) * (float)HOME_PX;
+		float n = approach(S.sx[r], tx);
+		if (n != S.sx[r]) S.dirty = 1;
+		S.sx[r] = n;
+	}
+
+	if (S.toast[0] && now > S.toast_until) { S.toast[0] = 0; S.dirty = 1; }
+
+	Clock c; plat_clock(&c);
+	if (c.minute != S.last_minute) { S.last_minute = c.minute; S.dirty = 1; under_ok = 0; }
+
+	pump_icons();
+	pump_bg(now);
+
+	if (!S.dirty) return 0;
+	S.dirty = 0;
+	draw();
+	return 1;
+}
