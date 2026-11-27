@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-# VitaDeck v0.3
+# VitaDeck v0.4
 
 A console-style home screen launcher for the PS Vita (HENkaku/Ensō or h-encore), inspired by SteamOS – without any third-party branding.
 Plain C with a software renderer. The user interface is in German.
@@ -73,6 +73,12 @@ Touch: tap a tile to select it, tap again to start. The button hints in the foot
   Log: `ux0:data/VitaDeck/plugin.log`.
   > **Note:** installing the plugin edits your taiHEN `config.txt`. VitaDeck asks first, keeps a backup next to it and verifies the result, but as with any plugin: if something goes wrong, boot while holding L and restore `config.txt` from `config.txt.vitadeck.bak` in VitaShell. The plugin is optional – VitaDeck works without it.
 
+## What's new in v0.4
+- Box art: Settings → "Cover laden" downloads covers from HexFlow-Covers over HTTPS (libcurl + mbedTLS, certificates verified)
+- Portrait tiles with box art; the hero shows the cover with a blurred, darkened background
+- Art cache next to every cover, so covers are there on the very first frame
+- Logo assets (bubble, LiveArea, README) redrawn exactly after concept 3E
+
 ## What's new in v0.3
 - Tested on real hardware; smooth thanks to render caches, a present thread on its own CPU core and 444 MHz (~12 ms per frame)
 - Hero area one third taller, with a background image per app (pic0/LiveArea or your own), preloaded in the background
@@ -85,7 +91,7 @@ Touch: tap a tile to select it, tap again to start. The button hints in the foot
 - Wordmark in Space Grotesk, fonts reduced to Latin characters (VPK ~260 KB instead of 800 KB)
 
 ## Roadmap
-Planned features and ideas (in German): [docs/ROADMAP.md](docs/ROADMAP.md).
+Planned features and ideas: [docs/ROADMAP.md](docs/ROADMAP.md).
 Not included: launching PSP ISOs through Adrenaline (`ux0:pspemu`).
 
 ## Building

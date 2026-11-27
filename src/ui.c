@@ -26,7 +26,7 @@
 #define C_STAR   0xffd166
 
 /* shown in the main menu; keep in sync with APP_VER in build.ps1 / CMakeLists.txt / Makefile */
-#define VD_VERSION "v0.3"
+#define VD_VERSION "v0.4"
 
 /* UI font size: +2 px over the original layout sizes (chip labels <= 10 px stay) */
 #define FS(n) ((n) <= 10 ? (n) : (n) + 2)
