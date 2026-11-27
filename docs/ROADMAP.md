@@ -1,11 +1,9 @@
 # VitaDeck – Feature ideas
 
-As of 2026-11-27, after v0.9. Sorted by value relative to effort.
-**Done so far: 1–8 and 14.** Next: 9–12.
+As of 2026-11-27, after v0.10. Sorted by value relative to effort.
+**Done so far: 1–10 and 14.** Next: 11, 12.
 
 ## Larger
-9. **Custom collections** – rows such as "Racing" or "With friends", assigned via the options menu.
-10. **Search / A–Z jump** in the library (system keyboard `sceImeDialog`); only worth it with many apps.
 11. **Navigation sounds** – soft click/confirm sounds; VitaDeck has no audio output yet (SceAudio).
 12. **Homebrew browser based on VitaDB** – networking, HTTPS with a bundled TLS library (the firmware certificates are outdated), VPK installation; check the API first. The largest sub-project.
 
@@ -23,3 +21,5 @@ As of 2026-11-27, after v0.9. Sorted by value relative to effort.
 - 14. Per-game clocks via PSVshell (installed by the user): the options menu writes its profiles ur0:data/PSVshell/profiles/<TITLEID> – Standard (none), Schnell (CPU 444 / GPU 222 / BUS 222 / XBAR 166), Maximal (CPU 500). Profile = 28 bytes (1-byte enums on arm-vita-eabi).
 - 7. PSP games: official PSP titles in ux0:pspemu/PSP/GAME (metadata from ur0:appmeta or EBOOT.PBP, icon cached in ux0:data/VitaDeck/pspicons) and Adrenaline bubbles (data/boot.inf) get the category PSP: own home row, library tab (only when present), covers from HexFlow-Covers/PSP
 - 8. Home screen background: the hero app's blurred background, darkened and faded towards the rows, built once the focus rests (250 ms)
+- 9. Custom collections: up to 8 named rows (options → "Sammlungen …"), stored as `#coll i name` + a membership column in state.txt; shown on the home screen after the favourites
+- 10. Library search with an own on-screen keyboard (QWERTZ, umlauts; the system IME needs GXM): options → "Suchen …", filters while typing, O ends it

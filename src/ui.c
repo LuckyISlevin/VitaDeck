@@ -51,7 +51,7 @@ static int theme_idx;
 #define C_STAR   0xffd166
 
 /* shown in the main menu; keep in sync with APP_VER in build.ps1 / CMakeLists.txt / Makefile */
-#define VD_VERSION "v0.9"
+#define VD_VERSION "v0.10"
 
 /* UI font size: +2 px over the original layout sizes (chip labels <= 10 px stay) */
 #define FS(n) ((n) <= 10 ? (n) : (n) + 2)
@@ -78,6 +78,7 @@ typedef struct {
 	int hidden;        /* hidden from home and library (except the "Ausgeblendet" tab) */
 	int last;          /* minutes since civil epoch, 0 = never */
 	unsigned play;     /* playtime in seconds (from the plugin's playtime.txt) */
+	unsigned colmask;  /* custom collections this app belongs to (bit i = colls[i]) */
 	Img *ic, *ics;     /* hero (128) and tile (112) icon */
 	Img *cv, *cvs;     /* cached placeholder cover, 128 and 112 */
 	int ic_state;      /* 0 = pending, 1 = ok, 2 = none */
@@ -90,10 +91,15 @@ typedef struct {
 } App;
 
 static App *apps;
+
+/* custom collections (ROADMAP 9): up to 8 named rows, stored as "#coll i name" in state.txt */
+#define MAXCOLL 8
+static char colls[MAXCOLL][28];   /* "" = unused slot */
+static char search[48];           /* library search ("" = off), UTF-8 */
 static int napps;
 
 typedef struct { const char *title; int n; int idx[MAXA]; } Row;
-#define MAXROWS 6   /* recent, favourites, Vita, PSP, homebrew, emulators */
+#define MAXROWS (6 + MAXCOLL)   /* recent, favourites, collections, Vita, PSP, homebrew, emulators */
 static Row rows[MAXROWS];
 static int nrows;
 static int lib[MAXA], nlib;
@@ -111,7 +117,7 @@ static const char *SORTS[] = { "A–Z", "Zuletzt gestartet", "Spielzeit" };
 #define NSORTS 3
 
 enum { V_BOOT, V_HOME, V_LIB };
-enum { OV_NONE, OV_MENU, OV_QA, OV_CTX, OV_LAUNCH, OV_SET, OV_CONFIRM };
+enum { OV_NONE, OV_MENU, OV_QA, OV_CTX, OV_LAUNCH, OV_SET, OV_CONFIRM, OV_KBD, OV_COLL };
 
 static struct {
 	int view, ov;
@@ -128,6 +134,7 @@ static struct {
 	int hoff[MAXROWS], loff;    /* scroll targets: first visible column per home row / first library row */
 	int last_minute;
 	int si, set_as, set_ret, plug, plug_old, confirm;   /* settings overlay */
+	int coi, coll_del;    /* collections overlay: selection, "press △ again to delete" */
 	char plug_cfg[32];
 	unsigned perf_us;     /* smoothed time to render a full screen (no overlay cache) */
 	unsigned perf_sec[4]; /* home screen breakdown: header, hero, tiles, footer */
@@ -221,11 +228,13 @@ static void load_state(void)
 	memcpy(s, d, len); s[len] = 0; free(d);
 	char *line = strtok(s, "\n");
 	while (line) {
-		char id[16]; int fav, last, hid = 0;
-		/* "id fav last [hidden]" – the 4th column is new, older files have 3 */
-		if (sscanf(line, "%15s %d %d %d", id, &fav, &last, &hid) >= 3) {
+		char id[16], cname[28]; int fav, last, hid = 0; unsigned cm = 0;
+		/* "id fav last [hidden [collections]]" – columns 4 and 5 are newer, older files have 3 */
+		if (line[0] != '#' && sscanf(line, "%15s %d %d %d %u", id, &fav, &last, &hid, &cm) >= 3) {
 			App *a = find_app(id);
-			if (a) { a->fav = fav; a->last = last; a->hidden = hid != 0; }
+			if (a) { a->fav = fav; a->last = last; a->hidden = hid != 0; a->colmask = cm; }
+		} else if (sscanf(line, "#coll %d %27[^\r]", &fav, cname) == 2 && fav >= 0 && fav < MAXCOLL) {
+			snprintf(colls[fav], sizeof colls[fav], "%s", cname);
 		} else if (sscanf(line, "#bright %d", &fav) == 1) {
 			S.bright = fav;
 		} else if (sscanf(line, "#theme %d", &fav) == 1) {
@@ -279,18 +288,32 @@ static void load_playtime(void)
 
 static void save_state(void)
 {
-	int cap = 64 + napps * 48, n = 0;
+	int cap = 64 + MAXCOLL * 40 + napps * 60, n = 0;
 	char *s = malloc(cap);
 	if (!s) return;
 	n += snprintf(s + n, cap - n, "#bright %d\n#theme %d\n", S.bright, theme_idx);
+	for (int c = 0; c < MAXCOLL; c++) if (colls[c][0]) n += snprintf(s + n, cap - n, "#coll %d %s\n", c, colls[c]);
 	for (int i = 0; i < napps; i++)
-		if (apps[i].fav || apps[i].last || apps[i].hidden)
-			n += snprintf(s + n, cap - n, "%s %d %d %d\n", apps[i].id, apps[i].fav, apps[i].last, apps[i].hidden);
+		if (apps[i].fav || apps[i].last || apps[i].hidden || apps[i].colmask)
+			n += snprintf(s + n, cap - n, "%s %d %d %d %u\n", apps[i].id, apps[i].fav, apps[i].last, apps[i].hidden, apps[i].colmask);
 	plat_write_file(plat_state_path(), s, n);
 	free(s);
 }
 
 /* ---------- lists ---------- */
+/* lower-case copy for searching: ASCII plus the Latin-1 capitals in UTF-8 (Ä Ö Ü …: C3 80–9E → +0x20) */
+static void fold(char *out, int n, const char *s)
+{
+	int k = 0;
+	for (; *s && k < n - 1; s++) {
+		unsigned char c = (unsigned char)*s;
+		if (c == 0xC3 && (unsigned char)s[1] >= 0x80 && (unsigned char)s[1] <= 0x9E && (unsigned char)s[1] != 0x97 && k < n - 2) {
+			out[k++] = (char)c; out[k++] = (char)((unsigned char)s[1] + 0x20); s++;
+		} else out[k++] = (char)tolower(c);
+	}
+	out[k] = 0;
+}
+
 static int ci_cmp(const char *a, const char *b)
 {
 	for (;; a++, b++) {
@@ -364,15 +387,36 @@ static void rebuild(void)
 	int tabs[] = { TAB_FAV, 1, TAB_PSP, 2, 3 };
 	for (int k = 0; k < 5 && nrows < MAXROWS; k++) {
 		n = lib_filter(tabs[k], tmp);
-		if (!n) continue;
-		qsort(tmp, n, sizeof(int), cmp_title);
-		r = &rows[nrows++];
-		r->title = ttl[k];
-		r->n = n;
-		memcpy(r->idx, tmp, n * sizeof(int));
+		if (n) {
+			qsort(tmp, n, sizeof(int), cmp_title);
+			r = &rows[nrows++];
+			r->title = ttl[k];
+			r->n = n;
+			memcpy(r->idx, tmp, n * sizeof(int));
+		}
+		if (k != 0) continue;
+		/* custom collections right after the favourites */
+		for (int c = 0; c < MAXCOLL && nrows < MAXROWS; c++) {
+			if (!colls[c][0]) continue;
+			n = 0;
+			for (int i = 0; i < napps && n < MAXA; i++) if (!apps[i].hidden && (apps[i].colmask >> c & 1)) tmp[n++] = i;
+			if (!n) continue;
+			qsort(tmp, n, sizeof(int), cmp_title);
+			r = &rows[nrows++];
+			r->title = colls[c];
+			r->n = n;
+			memcpy(r->idx, tmp, n * sizeof(int));
+		}
 	}
 	if (S.tab >= ntabs()) S.tab = 0;   /* "PSP" / "Ausgeblendet" vanish once empty */
 	nlib = lib_filter(tab_id(S.tab), lib);
+	if (search[0]) {   /* library search: keep titles containing the text (case-insensitive, umlauts too) */
+		char q[64], t[160];
+		fold(q, sizeof q, search);
+		int m = 0;
+		for (int i = 0; i < nlib; i++) { fold(t, sizeof t, apps[lib[i]].title); if (strstr(t, q)) lib[m++] = lib[i]; }
+		nlib = m;
+	}
 	qsort(lib, nlib, sizeof(int), S.sort == 2 ? cmp_play : S.sort == 1 ? cmp_last : cmp_title);
 	if (S.hrow >= nrows) S.hrow = nrows ? nrows - 1 : 0;
 	if (nrows && S.hcol >= rows[S.hrow].n) S.hcol = rows[S.hrow].n - 1;
@@ -875,7 +919,7 @@ static void toast(const char *msg)
 }
 
 /* ---------- hit testing (touch) ---------- */
-enum { H_HTILE = 1, H_HERO, H_TAB, H_LTILE, H_MENU, H_QA, H_CTX, H_BACKDROP, H_BTN, H_SET };
+enum { H_HTILE = 1, H_HERO, H_TAB, H_LTILE, H_MENU, H_QA, H_CTX, H_BACKDROP, H_BTN, H_SET, H_KEY, H_COLL };
 typedef struct { int x, y, w, h, act, a, b; } Hit;
 static Hit hits[160];
 static int nhits;
@@ -1417,14 +1461,25 @@ static void draw_lib(void)
 	}
 	glyph(x + 2, y, G_R, rgb(C_TXT), rgb(C_BG));
 	char sl[64];
-	snprintf(sl, sizeof sl, "Sortierung: %s", SORTS[S.sort]);
-	int sw = text_w(FONT_REG, FS(12), sl);
-	if (x + 30 + sw < SCR_W - 20)   /* with many tabs there is no room – sorting is in △ too */
-		text(FONT_REG, FS(12), SCR_W - 20 - sw, 56, sl, rgb(C_MUTE), 255);
+	if (search[0]) {   /* active search replaces the sort label (always shown) */
+		snprintf(sl, sizeof sl, "Suche: „%.40s“", search);
+		int sw = text_w(FONT_BOLD, FS(12), sl), sx = SCR_W - 20 - sw;
+		if (sx < x + 30) sx = x + 30;
+		gfx_rrect(sx - 10, 47, SCR_W - 20 - sx + 20, 30, 15, rgb(C_ACC), 255);
+		text_fit(FONT_BOLD, FS(12), sx, 54, SCR_W - 20 - sx, sl, rgb(C_INK), 255);
+	} else {
+		snprintf(sl, sizeof sl, "Sortierung: %s", SORTS[S.sort]);
+		int sw = text_w(FONT_REG, FS(12), sl);
+		if (x + 30 + sw < SCR_W - 20)   /* with many tabs there is no room – sorting is in △ too */
+			text(FONT_REG, FS(12), SCR_W - 20 - sw, 56, sl, rgb(C_MUTE), 255);
+	}
 
 	int top = 88;
 	if (!nlib) {
-		const char *m = tab_id(S.tab) == TAB_FAV ? "Noch keine Favoriten. Drück □ auf einer App, dann taucht sie hier auf."
+		char nm[96];
+		snprintf(nm, sizeof nm, "Keine Treffer für „%s“.", search);
+		const char *m = search[0] ? nm
+		              : tab_id(S.tab) == TAB_FAV ? "Noch keine Favoriten. Drück □ auf einer App, dann taucht sie hier auf."
 		              : tab_id(S.tab) == TAB_HIDDEN ? "Keine ausgeblendeten Apps."
 		                                    : "In dieser Kategorie ist nichts installiert.";
 		text(FONT_REG, FS(15), (SCR_W - text_w(FONT_REG, FS(15), m)) / 2, 260, m, rgb(C_MUTE), 255);
@@ -1448,7 +1503,7 @@ static void draw_lib(void)
 		if (a->play) { char p[24]; fmt_play(a->play, p, sizeof p); snprintf(play, sizeof play, "%s%s gespielt", last[0] ? " · " : "", p); }
 		snprintf(info, sizeof info, "%s · %s · %s%s%s", a->title, cat_name(a->cat), a->last ? "zuletzt " : "", last, play);
 	}
-	Hint hs[] = { { G_X, "Starten" }, { G_SQ, "Favorit" }, { G_TRI, "Optionen" }, { G_O, "Zurück" } };
+	Hint hs[] = { { G_X, "Starten" }, { G_SQ, "Favorit" }, { G_TRI, "Optionen" }, { G_O, search[0] ? "Suche beenden" : "Zurück" } };
 	footer(ai >= 0 ? info : NULL, hs, 4);
 }
 
@@ -1852,8 +1907,8 @@ static void draw_qa(void)
 static Img *ctx_img;          /* 48 px icon for the context menu */
 static const Img *ctx_src;
 
-enum { CA_LAUNCH, CA_FAV, CA_UNRECENT, CA_HIDE, CA_SORT, CA_OC };
-#define CTX_MAX 6
+enum { CA_LAUNCH, CA_FAV, CA_UNRECENT, CA_HIDE, CA_SORT, CA_OC, CA_COLL, CA_SEARCH };
+#define CTX_MAX 8
 
 static struct { volatile int state; char id[16]; int64_t app, patch; char pver[16]; int oc; } cinfo;   /* 0 idle, 1 wanted, 2 running, 3 done */
 static int ctx_items(const App *a, const char *out[], int act[])
@@ -1863,6 +1918,8 @@ static int ctx_items(const App *a, const char *out[], int act[])
 	out[n] = a->fav ? "Aus Favoriten entfernen" : "Zu Favoriten hinzufügen"; act[n++] = CA_FAV;
 	if (a->last && !a->hidden) { out[n] = "Aus „Zuletzt gestartet“ entfernen"; act[n++] = CA_UNRECENT; }
 	out[n] = a->hidden ? "Einblenden" : "Ausblenden"; act[n++] = CA_HIDE;
+	out[n] = "Sammlungen …"; act[n++] = CA_COLL;
+	if (S.view == V_LIB) { out[n] = search[0] ? "Suche ändern …" : "Suchen …"; act[n++] = CA_SEARCH; }
 	if (S.view == V_LIB) {
 		static char sl[48];
 		snprintf(sl, sizeof sl, "Sortieren: %s", SORTS[(S.sort + 1) % NSORTS]);
@@ -1971,11 +2028,261 @@ static void draw_toast(void)
 	text(FONT_REG, FS(13), x + 18, y + 11, S.toast, rgb(C_TXT), 255);
 }
 
+/* ---------- on-screen keyboard ----------
+   Drawn by VitaDeck itself: the system keyboard (sceImeDialog) needs GXM rendering,
+   VitaDeck renders in software. German QWERTZ, auto-capitalisation at the start and
+   after a space. D-pad moves, X types, □ deletes, △ = space, START = done, O = cancel. */
+#define KB_ROWS 5
+static const char *KB[KB_ROWS][11] = {
+	{ "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", NULL },
+	{ "Q", "W", "E", "R", "T", "Z", "U", "I", "O", "P", "Ü" },
+	{ "A", "S", "D", "F", "G", "H", "J", "K", "L", "Ö", "Ä" },
+	{ "Y", "X", "C", "V", "B", "N", "M", "-", ".", "ß", NULL },
+	{ "Leerzeichen", "Löschen", "Fertig", NULL },
+};
+static struct {
+	char title[48], buf[48];
+	int r, c, ret_ov;
+	void (*change)(const char *s);
+	void (*done)(const char *s, int ok);
+} kb;
+
+static int kb_len(int r) { int n = 0; while (n < 11 && KB[r][n]) n++; return n; }
+
+static void kbd_open(const char *title, const char *init, void (*change)(const char *), void (*done)(const char *, int), int ret_ov)
+{
+	snprintf(kb.title, sizeof kb.title, "%s", title);
+	snprintf(kb.buf, sizeof kb.buf, "%s", init);
+	kb.r = 1; kb.c = 0; kb.change = change; kb.done = done; kb.ret_ov = ret_ov;
+	S.ov = OV_KBD;
+	S.dirty = 1;
+}
+
+static void kbd_changed(void) { if (kb.change) kb.change(kb.buf); S.dirty = 1; }
+
+static void kbd_backspace(void)
+{
+	int n = (int)strlen(kb.buf);
+	while (n > 0 && ((unsigned char)kb.buf[n - 1] & 0xC0) == 0x80) n--;   /* UTF-8 continuation bytes */
+	if (n > 0) n--;
+	kb.buf[n] = 0;
+	kbd_changed();
+}
+
+static void kbd_type(const char *k)
+{
+	int n = (int)strlen(kb.buf);
+	int cap = n == 0 || kb.buf[n - 1] == ' ';
+	char t[8];
+	if (!cap && k[0] >= 'A' && k[0] <= 'Z' && !k[1]) { t[0] = (char)(k[0] + 32); t[1] = 0; }
+	else if (!cap && (unsigned char)k[0] == 0xC3 && (unsigned char)k[1] >= 0x80 && (unsigned char)k[1] <= 0x9E) {
+		t[0] = k[0]; t[1] = (char)((unsigned char)k[1] + 0x20); t[2] = 0;   /* Ä → ä */
+	} else snprintf(t, sizeof t, "%s", k);
+	if (n + (int)strlen(t) >= (int)sizeof kb.buf - 1) return;
+	strcat(kb.buf, t);
+	kbd_changed();
+}
+
+static void kbd_finish(int ok)
+{
+	S.ov = kb.ret_ov;
+	S.dirty = 1;
+	under_ok = 0;
+	if (kb.done) kb.done(kb.buf, ok);
+}
+
+static void kbd_key(int r, int c)
+{
+	kb.r = r; kb.c = c;
+	if (r == KB_ROWS - 1) {
+		if (c == 0) { if (strlen(kb.buf) + 1 < sizeof kb.buf) { strcat(kb.buf, " "); kbd_changed(); } }
+		else if (c == 1) kbd_backspace();
+		else kbd_finish(1);
+		return;
+	}
+	kbd_type(KB[r][c]);
+}
+
+static void kbd_press(unsigned b)
+{
+	if (b == B_UP && kb.r > 0) { kb.r--; if (kb.c >= kb_len(kb.r)) kb.c = kb_len(kb.r) - 1; }
+	else if (b == B_DOWN && kb.r < KB_ROWS - 1) {
+		kb.r++;
+		if (kb.r == KB_ROWS - 1) kb.c = kb.c < 4 ? 0 : kb.c < 7 ? 1 : 2;   /* wide keys in the last row */
+		else if (kb.c >= kb_len(kb.r)) kb.c = kb_len(kb.r) - 1;
+	}
+	else if (b == B_LEFT) kb.c = kb.c > 0 ? kb.c - 1 : kb_len(kb.r) - 1;
+	else if (b == B_RIGHT) kb.c = kb.c < kb_len(kb.r) - 1 ? kb.c + 1 : 0;
+	else if (b == B_X) kbd_key(kb.r, kb.c);
+	else if (b == B_SQ) kbd_backspace();
+	else if (b == B_TRI) kbd_key(KB_ROWS - 1, 0);
+	else if (b == B_START) kbd_finish(1);
+	else if (b == B_O) kbd_finish(0);
+}
+
+static void draw_kbd(void)
+{
+	dim();
+	int py = 220;
+	gfx_rect(0, py, SCR_W, SCR_H - 36 - py, rgb(C_PANEL), 255);
+	gfx_rect(0, py, SCR_W, 1, rgb(C_LINE2), 255);
+	hit(0, 0, SCR_W, SCR_H, 0, 0, 0);
+	text(FONT_BOLD, FS(15), (SCR_W - text_w(FONT_BOLD, FS(15), kb.title)) / 2, 128, kb.title, rgb(C_TXT), 255);
+	int fw = 560, fx = (SCR_W - fw) / 2;
+	gfx_rrect(fx, 160, fw, 44, 10, rgb(C_CARD), 255);
+	gfx_rrect(fx, 202, fw, 2, 1, rgb(C_ACC), 255);
+	char shown[64];
+	snprintf(shown, sizeof shown, "%s|", kb.buf);
+	text_fit(FONT_REG, FS(16), fx + 16, 171, fw - 32, shown, rgb(C_TXT), 255);
+	for (int r = 0; r < KB_ROWS; r++) {
+		int n = kb_len(r), y = py + 14 + r * 50;
+		int widths[11], total = 0;
+		for (int c = 0; c < n; c++) { widths[c] = r == KB_ROWS - 1 ? (c == 0 ? 330 : c == 1 ? 150 : 180) : 70; total += widths[c] + 8; }
+		int x = (SCR_W - total + 8) / 2;
+		for (int c = 0; c < n; c++) {
+			int on = r == kb.r && c == kb.c, w = widths[c];
+			u32 bgc = on ? rgb(C_ACC) : r == KB_ROWS - 1 && c == 2 ? rgb(C_BTN) : rgb(C_CARD);
+			gfx_rrect(x, y, w, 42, 8, bgc, 255);
+			const char *l = KB[r][c];
+			int f = r == KB_ROWS - 1 ? FONT_BOLD : FONT_REG;
+			text(f, FS(14), x + (w - text_w(f, FS(14), l)) / 2, y + 11, l, rgb(on ? C_INK : C_TXT), 255);
+			hit(x, y, w, 42, H_KEY, r, c);
+			x += w + 8;
+		}
+	}
+	Hint hs[] = { { G_X, "Tippen" }, { G_SQ, "Löschen" }, { G_TRI, "Leerzeichen" }, { G_START, "Fertig" }, { G_O, "Abbrechen" } };
+	footer(NULL, hs, 5);
+}
+
+/* ---------- library search (ROADMAP 10) ---------- */
+static char search_saved[48];
+
+static void search_change(const char *s)
+{
+	snprintf(search, sizeof search, "%s", s);
+	S.lidx = 0; S.loff = 0; S.ly = 0;
+	rebuild();
+}
+
+static void search_done(const char *s, int ok)
+{
+	if (!ok) { snprintf(search, sizeof search, "%s", search_saved); S.lidx = 0; rebuild(); return; }
+	snprintf(search, sizeof search, "%s", s);
+	rebuild();
+}
+
+static void search_open(void)
+{
+	snprintf(search_saved, sizeof search_saved, "%s", search);
+	S.view = V_LIB;
+	kbd_open("Suche in der Bibliothek", search, search_change, search_done, OV_NONE);
+}
+
+/* ---------- custom collections overlay (ROADMAP 9) ---------- */
+static int coll_list(int out[])   /* used slots, then -1 for "Neue Sammlung" */
+{
+	int n = 0;
+	for (int c = 0; c < MAXCOLL; c++) if (colls[c][0]) out[n++] = c;
+	out[n++] = -1;
+	return n;
+}
+
+static void coll_new_done(const char *s, int ok)
+{
+	S.ov = OV_COLL;
+	if (!ok || !s[0]) return;
+	for (int c = 0; c < MAXCOLL; c++) {
+		if (colls[c][0]) continue;
+		snprintf(colls[c], sizeof colls[c], "%s", s);
+		apps[S.ctx_app].colmask |= 1u << c;
+		save_state();
+		rebuild();
+		char m[64]; snprintf(m, sizeof m, "Sammlung „%s“ angelegt", colls[c]); toast(m);
+		return;
+	}
+}
+
+static void coll_act(int i)
+{
+	int l[MAXCOLL + 1], n = coll_list(l);
+	if (i < 0 || i >= n) return;
+	S.coi = i;
+	S.coll_del = 0;
+	int c = l[i];
+	if (c < 0) {
+		int used = n - 1;
+		if (used >= MAXCOLL) { toast("Mehr als 8 Sammlungen gehen nicht"); return; }
+		kbd_open("Neue Sammlung", "", NULL, coll_new_done, OV_COLL);
+		return;
+	}
+	apps[S.ctx_app].colmask ^= 1u << c;
+	save_state();
+	rebuild();
+}
+
+static void coll_delete(void)
+{
+	int l[MAXCOLL + 1], n = coll_list(l);
+	if (S.coi >= n || l[S.coi] < 0) return;
+	if (!S.coll_del) { S.coll_del = 1; toast("Nochmal △ drücken, um die Sammlung zu löschen"); return; }
+	int c = l[S.coi];
+	char m[64]; snprintf(m, sizeof m, "Sammlung „%s“ gelöscht", colls[c]);
+	colls[c][0] = 0;
+	for (int i = 0; i < napps; i++) apps[i].colmask &= ~(1u << c);
+	S.coll_del = 0;
+	if (S.coi > 0) S.coi--;
+	save_state();
+	rebuild();
+	toast(m);
+}
+
+static void coll_press(unsigned b)
+{
+	int l[MAXCOLL + 1], n = coll_list(l);
+	if (b == B_UP) { S.coi = S.coi > 0 ? S.coi - 1 : 0; S.coll_del = 0; }
+	else if (b == B_DOWN) { S.coi = S.coi < n - 1 ? S.coi + 1 : n - 1; S.coll_del = 0; }
+	else if (b == B_X) coll_act(S.coi);
+	else if (b == B_TRI) coll_delete();
+	else if (b == B_O) { S.ov = OV_CTX; S.coll_del = 0; }
+}
+
+static void draw_coll(void)
+{
+	dim();
+	const App *a = &apps[S.ctx_app];
+	int l[MAXCOLL + 1], n = coll_list(l);
+	int w = 420, h = 84 + n * 46, x = (SCR_W - w) / 2, y = (SCR_H - h) / 2 - 10;
+	gfx_rrect(x, y, w, h, 12, rgb(C_PANEL), 255);
+	hit(x, y, w, h, 0, 0, 0);
+	text(FONT_BOLD, FS(16), x + 20, y + 18, "Sammlungen", rgb(C_TXT), 255);
+	text_fit(FONT_REG, FS(12), x + 20, y + 44, w - 40, a->title, rgb(C_MUTE), 255);
+	int iy = y + 76;
+	for (int i = 0; i < n; i++) {
+		int on = i == S.coi, c = l[i];
+		if (on) gfx_rrect(x + 10, iy, w - 20, 42, 8, rgb(C_ACC), 255);
+		u32 fg = rgb(on ? C_INK : C_TXT);
+		if (c >= 0) {
+			int member = a->colmask >> c & 1;
+			gfx_rrect(x + 22, iy + 10, 22, 22, 6, on ? rgb(C_INK) : rgb(C_TRACK), 255);
+			if (member) {
+				u32 ck = on ? rgb(C_ACC) : rgb(C_ACC);
+				gfx_line(x + 27, iy + 21, x + 32, iy + 26, 2.4f, ck, 255);
+				gfx_line(x + 32, iy + 26, x + 40, iy + 15, 2.4f, ck, 255);
+			}
+			text_fit(on ? FONT_BOLD : FONT_REG, FS(14), x + 56, iy + 12, w - 90, colls[c], fg, 255);
+		} else text(on ? FONT_BOLD : FONT_REG, FS(14), x + 24, iy + 12, "+ Neue Sammlung …", fg, 255);
+		hit(x + 10, iy, w - 20, 42, H_COLL, i, 0);
+		iy += 46;
+	}
+	Hint hs[] = { { G_X, "Umschalten" }, { G_TRI, "Löschen" }, { G_O, "Zurück" } };
+	footer(NULL, hs, 3);
+}
+
 static void draw(void)
 {
 	nhits = 0;
 	if (S.view == V_BOOT) { draw_boot(); return; }
-	int cached = (S.ov >= OV_MENU && S.ov <= OV_CTX) || S.ov == OV_SET || S.ov == OV_CONFIRM;
+	int cached = (S.ov >= OV_MENU && S.ov <= OV_CTX) || S.ov == OV_SET || S.ov == OV_CONFIRM || S.ov == OV_COLL;   /* OV_KBD: live search changes the view below */
 	if (!cached) under_ok = 0;
 	if (cached && under_ok) {
 		memcpy(gfx_buffer(), under, SCR_W * SCR_H * 4);   /* base + dim from cache */
@@ -1991,6 +2298,8 @@ static void draw(void)
 	else if (S.ov == OV_LAUNCH) draw_launch();
 	else if (S.ov == OV_SET) draw_set();
 	else if (S.ov == OV_CONFIRM) { draw_set(); draw_confirm(); }
+	else if (S.ov == OV_KBD) draw_kbd();
+	else if (S.ov == OV_COLL) draw_coll();
 	draw_toast();
 }
 
@@ -2134,6 +2443,8 @@ static void ctx_act(int i)
 		break;
 	}
 	case CA_SORT: lib_toggle_sort(S.ctx_app); break;
+	case CA_COLL: S.ov = OV_COLL; S.coi = 0; S.coll_del = 0; break;
+	case CA_SEARCH: search_open(); break;
 	case CA_OC: {
 		S.ov = OV_CTX;   /* stay in the menu: the entry shows the new value */
 		if (!plat_oc_available()) { toast("PSVshell (Kernel-Plugin) installieren, z. B. über VitaDB"); break; }
@@ -2152,6 +2463,8 @@ static void press(unsigned b)
 {
 	S.dirty = 1;
 	if (S.ov == OV_LAUNCH) return;
+	if (S.ov == OV_KBD) { kbd_press(b); return; }
+	if (S.ov == OV_COLL) { coll_press(b); return; }
 	if (S.ov == OV_CONFIRM) {
 		if (b == B_X) confirm_act();
 		else if (b == B_O) S.ov = OV_SET;
@@ -2232,7 +2545,10 @@ static void press(unsigned b)
 		if (ai >= 0) { S.ov = OV_CTX; S.ctx_app = ai; S.ci = 0; }
 		else lib_toggle_sort(-1);
 		break;
-	case B_O: S.view = V_HOME; break;
+	case B_O:   /* an active search is cleared first */
+		if (search[0]) { search[0] = 0; S.lidx = 0; rebuild(); toast("Suche beendet"); }
+		else S.view = V_HOME;
+		break;
 	}
 }
 
@@ -2261,6 +2577,8 @@ static void tap(int x, int y)
 			return;
 		case H_MENU: menu_act(h->a); return;
 		case H_CTX: ctx_act(h->a); return;
+		case H_KEY: kbd_key(h->a, h->b); return;
+		case H_COLL: coll_act(h->a); return;
 		case H_QA: {
 			S.qi = h->a;
 			int px = SCR_W - 380 + 34;

@@ -729,7 +729,7 @@ int plat_net_begin(char *err, int n)
 	net_log("curl_global_init: %d, %s", (int)g, curl_version());
 	net_curl = curl_easy_init();
 	if (!net_curl) { snprintf(err, n, "curl konnte nicht starten"); plat_net_end(); return -1; }
-	curl_easy_setopt(net_curl, CURLOPT_USERAGENT, "VitaDeck/0.9 (+https://github.com/LuckyISlevin/VitaDeck)");
+	curl_easy_setopt(net_curl, CURLOPT_USERAGENT, "VitaDeck/0.10 (+https://github.com/LuckyISlevin/VitaDeck)");
 	curl_easy_setopt(net_curl, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(net_curl, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(net_curl, CURLOPT_CONNECTTIMEOUT, 10L);

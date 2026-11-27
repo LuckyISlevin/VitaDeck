@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-# VitaDeck v0.9
+# VitaDeck v0.10
 
 A console-style home screen launcher for the PS Vita (HENkaku/Ensō or h-encore), inspired by SteamOS – without any third-party branding.
 Plain C with a software renderer. The user interface is in German.
@@ -64,7 +64,8 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
   [HexFlow-Covers](https://github.com/andiweli/hexflow-covers) (the database also used by HexFlow and RetroFlow) to
   `ux0:data/VitaDeck/covers/box/<TITLE-ID>.png`; existing files are kept, so you can also put your own 250×320 PNGs there.
   Wi-Fi is required. Apps without box art show their icon. Images are decoded on a background thread and preloaded while the UI is idle.
-- Library with categories and sorting (A–Z / recently played / playtime, via △ options)
+- Library with categories, sorting (A–Z / recently played / playtime) and **search** (△ → "Suchen …", own on-screen keyboard, filters while typing)
+- **Collections:** △ → "Sammlungen …" – create named collections (e.g. "Racing") and add apps; each appears as its own row on the home screen
 - Hide apps: △ → "Ausblenden"; hidden apps appear in the library tab "Ausgeblendet" (only shown when not empty) and can be restored there via △ → "Einblenden"
 - Launches via `sceAppMgrLaunchAppByUri("psgm:play?titleid=…")`; the launcher exits while the game runs. If a launch fails, VitaDeck stays open and shows the error code.
 - Main menu: home, library, reload app list, settings, standby, restart, quit launcher
@@ -84,6 +85,10 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
   appends the minutes to `ux0:data/VitaDeck/playtime.txt`; the hero shows "Gespielt: 12 Std." and the library can sort by it.
   VitaDeck keeps an installed plugin up to date and shows in the settings when a reboot is needed to load the new version.
   > **Note:** installing the plugin edits your taiHEN `config.txt`. VitaDeck asks first, keeps a backup next to it and verifies the result, but as with any plugin: if something goes wrong, boot while holding L and restore `config.txt` from `config.txt.vitadeck.bak` in VitaShell. The plugin is optional – VitaDeck works without it.
+
+## What's new in v0.10
+- **Search** in the library (△ → "Suchen …") with an on-screen keyboard; the list filters while you type
+- **Collections:** group apps into your own named rows on the home screen (△ → "Sammlungen …")
 
 ## What's new in v0.9
 - **PSP games:** official PSP titles (ux0:pspemu) and Adrenaline bubbles get their own home row "PSP-Spiele" and library tab "PSP"; "Cover laden" also fetches PSP covers
