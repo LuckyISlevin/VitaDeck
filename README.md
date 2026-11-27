@@ -50,6 +50,7 @@ All versions share the title ID `VLAUNCH01` and install as an update over the pr
 | SELECT | quick access | quick access |
 
 Touch: tap a tile to select it, tap again to start. The button hints in the footer can be tapped too.
+Swipe: sideways scrolls a home row, up/down jumps between rows; in the library up/down scrolls the grid and sideways switches the tab. Releasing snaps to whole tiles, a quick flick carries further.
 
 ## Features
 - Reads all apps from `ux0:app` (title from `param.sfo`, icon from `ur0:appmeta/<ID>/icon0.png`)

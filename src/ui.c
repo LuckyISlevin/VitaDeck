@@ -92,6 +92,7 @@ static struct {
 	uint64_t toast_until;
 	int dirty;
 	float sy, sx[5], ly;  /* animated scroll */
+	int hoff[5], loff;    /* scroll targets: first visible column per home row / first library row */
 	int last_minute;
 	int si, set_as, set_ret, plug, plug_old, confirm;   /* settings overlay */
 	char plug_cfg[32];
@@ -1869,8 +1870,8 @@ static void press(unsigned b)
 	/* library */
 	int ai = lib_app();
 	switch (b) {
-	case B_L: S.tab = (S.tab + ntabs() - 1) % ntabs(); S.lidx = 0; S.ly = 0; rebuild(); break;
-	case B_R: S.tab = (S.tab + 1) % ntabs(); S.lidx = 0; S.ly = 0; rebuild(); break;
+	case B_L: S.tab = (S.tab + ntabs() - 1) % ntabs(); S.lidx = 0; S.ly = 0; S.loff = 0; rebuild(); break;
+	case B_R: S.tab = (S.tab + 1) % ntabs(); S.lidx = 0; S.ly = 0; S.loff = 0; rebuild(); break;
 	case B_LEFT: if (S.lidx > 0) S.lidx--; break;
 	case B_RIGHT: if (S.lidx < nlib - 1) S.lidx++; break;
 	case B_UP: if (S.lidx >= LIB_COLS) S.lidx -= LIB_COLS; break;
@@ -1909,7 +1910,7 @@ static void tap(int x, int y)
 			if (S.hrow == h->a && S.hcol == h->b) launch(home_app());
 			else { S.hrow = h->a; S.hcol = h->b; }
 			return;
-		case H_TAB: S.tab = h->a; S.lidx = 0; S.ly = 0; rebuild(); return;
+		case H_TAB: S.tab = h->a; S.lidx = 0; S.ly = 0; S.loff = 0; rebuild(); return;
 		case H_LTILE:
 			if (S.lidx == h->a) launch(lib_app()); else S.lidx = h->a;
 			return;
@@ -1938,6 +1939,113 @@ static float approach(float v, float t)
 	float d = t - v;
 	if (fabsf(d) < 0.6f) return t;
 	return v + d * 0.32f;
+}
+
+/* ---------- swipe scrolling ----------
+   The axis is locked once the finger has moved past the tap threshold. While
+   dragging, the scroll position follows the finger; on release it snaps to whole
+   columns / rows, projected a little ahead by the release speed (fling). */
+enum { SW_NONE, SW_OFF, SW_HOME_H, SW_HOME_V, SW_LIB_V, SW_LIB_H };
+static struct { int axis, row, x0, y0, last; float base, vel; } swipe;
+
+static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+static void swipe_begin(int x, int y)
+{
+	swipe.axis = SW_NONE; swipe.x0 = x; swipe.y0 = y; swipe.vel = 0; swipe.last = 0;
+}
+
+static void swipe_move(int dx, int dy)
+{
+	if (swipe.axis == SW_NONE) {
+		int horiz = abs(dx) > abs(dy), y = swipe.y0;
+		swipe.axis = SW_OFF;
+		if (S.ov != OV_NONE || y < 44 || y >= SCR_H - 36) return;
+		if (S.view == V_HOME && nrows) {
+			if (horiz && y >= HOME_TOP && S.hrow < 5) { swipe.axis = SW_HOME_H; swipe.row = S.hrow; swipe.base = S.sx[S.hrow]; }
+			else if (!horiz) { swipe.axis = SW_HOME_V; swipe.base = S.sy; }
+		} else if (S.view == V_LIB && y >= 90) {
+			if (horiz) swipe.axis = SW_LIB_H;
+			else if (nlib) { swipe.axis = SW_LIB_V; swipe.base = S.ly; }
+		}
+	}
+	int d = swipe.axis == SW_HOME_H || swipe.axis == SW_LIB_H ? dx : dy;
+	swipe.vel = swipe.vel * 0.5f + (d - swipe.last) * 0.5f;   /* px per frame, smoothed */
+	swipe.last = d;
+	switch (swipe.axis) {
+	case SW_HOME_H: {
+		int n = rows[swipe.row].n, mx = n > 6 ? n - 6 : 0;
+		S.sx[swipe.row] = clampf(swipe.base - d, -48, mx * (float)HOME_PX + 48);
+		S.dirty = 1;
+		break;
+	}
+	case SW_HOME_V:
+		S.sy = clampf(swipe.base - d, -48, (nrows - 1) * (float)ROW_H + 48);
+		S.dirty = 1;
+		break;
+	case SW_LIB_V: {
+		int lrows = (nlib + LIB_COLS - 1) / LIB_COLS, mx = lrows > 2 ? lrows - 2 : 0;
+		S.ly = clampf(swipe.base - d, -48, mx * (float)LIB_PY + 48);
+		S.dirty = 1;
+		break;
+	}
+	}
+}
+
+static void swipe_end(int dx, int dy)
+{
+	(void)dy;
+	float fling = -swipe.vel * 7;   /* where a flick would carry the content */
+	switch (swipe.axis) {
+	case SW_HOME_H: {
+		int r = swipe.row, n = rows[r].n, mx = n > 6 ? n - 6 : 0;
+		int k = (int)floorf((S.sx[r] + fling) / HOME_PX + 0.5f);
+		k = k < 0 ? 0 : k > mx ? mx : k;
+		S.hoff[r] = k;
+		if (r == S.hrow) {   /* pull the focus into the new window */
+			if (S.hcol < k) S.hcol = k;
+			if (S.hcol > k + 5) S.hcol = k + 5;
+			if (S.hcol > n - 1) S.hcol = n - 1;
+		}
+		break;
+	}
+	case SW_HOME_V: {
+		int k = (int)floorf((S.sy + fling) / ROW_H + 0.5f);
+		/* a deliberate swipe always moves at least one row */
+		if (k == S.hrow && fabsf(S.sy - S.hrow * (float)ROW_H) > ROW_H / 4) k += S.sy > S.hrow * ROW_H ? 1 : -1;
+		k = k < 0 ? 0 : k > nrows - 1 ? nrows - 1 : k;
+		S.hrow = k;
+		if (S.hcol >= rows[k].n) S.hcol = rows[k].n - 1;
+		if (k < 5) {   /* keep the column if it is visible in that row, else take the nearest visible one */
+			if (S.hcol < S.hoff[k]) S.hcol = S.hoff[k];
+			if (S.hcol > S.hoff[k] + 5) S.hcol = S.hoff[k] + 5;
+			if (S.hcol > rows[k].n - 1) S.hcol = rows[k].n - 1;
+		}
+		break;
+	}
+	case SW_LIB_V: {
+		int lrows = (nlib + LIB_COLS - 1) / LIB_COLS, mx = lrows > 2 ? lrows - 2 : 0;
+		int k = (int)floorf((S.ly + fling) / LIB_PY + 0.5f);
+		k = k < 0 ? 0 : k > mx ? mx : k;
+		S.loff = k;
+		int r = S.lidx / LIB_COLS, c = S.lidx % LIB_COLS;
+		if (r < k) r = k;
+		if (r > k + 1) r = k + 1;
+		S.lidx = r * LIB_COLS + c;
+		if (S.lidx > nlib - 1) S.lidx = nlib - 1;
+		break;
+	}
+	case SW_LIB_H:
+		if (abs(dx) > 100) {
+			int n = ntabs();
+			S.tab = (S.tab + (dx < 0 ? 1 : n - 1)) % n;
+			S.lidx = 0; S.ly = 0; S.loff = 0;
+			rebuild();
+		}
+		break;
+	}
+	swipe.axis = SW_NONE;
+	S.dirty = 1;
 }
 
 void ui_init(void)
@@ -2008,28 +2116,47 @@ int ui_frame(const Input *in, u32 *buf)
 	}
 	prev_btn = b;
 
-	/* touch: tap = down/up with little movement */
+	/* touch: tap = down/up with little movement; a drag scrolls (swipe) */
 	if (in->touch) {
-		if (!touch_was) { touch_x0 = in->tx; touch_y0 = in->ty; touch_moved = 0; }
+		if (!touch_was) { touch_x0 = in->tx; touch_y0 = in->ty; touch_moved = 0; swipe_begin(in->tx, in->ty); }
 		if (abs(in->tx - touch_x0) > 24 || abs(in->ty - touch_y0) > 24) touch_moved = 1;
 		touch_lx = in->tx; touch_ly = in->ty;
-	} else if (touch_was && !touch_moved) {
-		tap(touch_lx, touch_ly);
+		if (touch_moved) swipe_move(in->tx - touch_x0, in->ty - touch_y0);
+	} else if (touch_was) {
+		if (!touch_moved) tap(touch_lx, touch_ly);
+		else swipe_end(touch_lx - touch_x0, touch_ly - touch_y0);
 	}
 	touch_was = in->touch;
 	if (b || in->touch) last_input = now;
 
-	/* scroll targets */
-	float ty = S.hrow * (float)ROW_H;
-	float tl = 0;
-	if (nlib) { int r = S.lidx / LIB_COLS; tl = (r > 1 ? r - 1 : 0) * (float)LIB_PY; }
-	float nsy = approach(S.sy, ty), nly = approach(S.ly, tl);
-	if (nsy != S.sy || nly != S.ly) S.dirty = 1;
-	S.sy = nsy; S.ly = nly;
+	/* scroll targets: the focus stays inside the visible window (6 columns /
+	   2 library rows); a swipe moves the window and pulls the focus along */
+	int lrows = (nlib + LIB_COLS - 1) / LIB_COLS, lmax = lrows > 2 ? lrows - 2 : 0;
+	if (S.loff > lmax) S.loff = lmax;
+	if (nlib) {
+		int r = S.lidx / LIB_COLS;
+		if (r < S.loff) S.loff = r;
+		if (r > S.loff + 1) S.loff = r - 1;
+	}
+	if (swipe.axis != SW_HOME_V) {
+		float nsy = approach(S.sy, S.hrow * (float)ROW_H);
+		if (nsy != S.sy) S.dirty = 1;
+		S.sy = nsy;
+	}
+	if (swipe.axis != SW_LIB_V) {
+		float nly = approach(S.ly, S.loff * (float)LIB_PY);
+		if (nly != S.ly) S.dirty = 1;
+		S.ly = nly;
+	}
 	for (int r = 0; r < nrows && r < 5; r++) {
-		float tx = S.sx[r];
-		if (r == S.hrow) tx = (S.hcol > 5 ? S.hcol - 5 : 0) * (float)HOME_PX;
-		float n = approach(S.sx[r], tx);
+		int mx = rows[r].n > 6 ? rows[r].n - 6 : 0;
+		if (S.hoff[r] > mx) S.hoff[r] = mx;
+		if (r == S.hrow) {
+			if (S.hcol < S.hoff[r]) S.hoff[r] = S.hcol;
+			if (S.hcol > S.hoff[r] + 5) S.hoff[r] = S.hcol - 5;
+		}
+		if (swipe.axis == SW_HOME_H && r == swipe.row) continue;
+		float n = approach(S.sx[r], S.hoff[r] * (float)HOME_PX);
 		if (n != S.sx[r]) S.dirty = 1;
 		S.sx[r] = n;
 	}
