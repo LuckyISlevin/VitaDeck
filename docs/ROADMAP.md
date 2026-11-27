@@ -27,3 +27,4 @@ As of 2026-11-27, after v0.5. Sorted by value relative to effort.
 - 1. Brightness: the system setting (registry `/CONFIG/DISPLAY/brightness`) is read at startup and written back on every change; VitaDeck's saved value is only applied as a fallback
 - 5. Playtime: the plugin (v2) appends "TITLEID seconds" to playtime.txt every minute and at the end of a session; VitaDeck sums and compacts it, shows it in the hero and sorts the library by it
 - 6. Swipe scrolling: home rows (sideways), row jumps (up/down), library grid (up/down), tab switch (sideways); snaps to whole tiles with a fling; rows scroll only when the focus reaches an edge
+- Extra (not on the list): colour schemes (Nacht, Glut, Aurora, Amethyst, OLED) and a Wi-Fi icon in the header

@@ -19,7 +19,10 @@ Fonts: Lato (UI) and Lexend (wordmark), both under the SIL Open Font License (`r
 | ![Library](docs/screenshots/bibliothek.png) | ![App options](docs/screenshots/optionen.png) |
 | Library sorted by **playtime**; apps without a cover show their icon | Options (△): favourite, hide |
 | ![Settings](docs/screenshots/einstellungen.png) | ![Quick access](docs/screenshots/schnellzugriff.png) |
-| Settings: return plugin and **cover download** | Quick access (SELECT) |
+| Settings: return plugin, **cover download** and **colour scheme** | Quick access (SELECT) |
+
+![Colour schemes Glut, Aurora, Amethyst and OLED](docs/screenshots/farbschemas.png)
+<sub>Colour schemes besides the default "Nacht": Glut, Aurora, Amethyst and OLED.</sub>
 
 <sub>Captured in the Vita3K emulator with a demo set: all titles and covers are made up and generated (`docs/demo/`). On a real Vita, "Cover laden" fetches the real box art from HexFlow-Covers.</sub>
 
@@ -66,6 +69,8 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
 - Launches via `sceAppMgrLaunchAppByUri("psgm:play?titleid=…")`; the launcher exits while the game runs. If a launch fails, VitaDeck stays open and shows the error code.
 - Main menu: home, library, reload app list, settings, standby, restart, quit launcher
 - Quick access: brightness (kept in sync with the system setting), volume (system-wide via SceAVConfig), battery, render-time diagnostics
+- **Colour schemes** (Settings → "Farbschema", ←/→): Nacht (default), Glut, Aurora, Amethyst, OLED – switches instantly
+- Header with Wi-Fi signal (hidden without a connection), battery and clock
 - **Return plugin** (Settings → "Rückkehr-Plugin" → install): a small taiHEN user plugin for the system shell.
   It starts VitaDeck after boot and reopens it when a game started from VitaDeck is closed
   (games started from the LiveArea are left alone). Both can be switched off separately; the return switch applies immediately, autostart on the next boot.

@@ -33,6 +33,7 @@ uint64_t plat_us(void);
 extern unsigned plat_present_us;   /* last time to hand a frame to the display */
 void plat_clock(Clock *c);
 int plat_battery(int *charging);
+int plat_wifi(void);   /* -1 = no Wi-Fi connection, else signal strength 0..100 */
 int plat_read_file(const char *path, unsigned char **data, int *len);
 int plat_write_file(const char *path, const void *data, int len);
 const char *plat_res(const char *name);

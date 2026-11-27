@@ -507,15 +507,35 @@ static size_t net_sink(void *ptr, size_t size, size_t nmemb, void *ud)
 int plat_file_exists(const char *path) { return file_exists(path); }
 int plat_file_size(const char *path) { SceIoStat st; return sceIoGetstat(path, &st) < 0 ? -1 : (int)st.st_size; }
 
+/* SceNet + SceNetCtl are brought up once at startup (main thread) and stay up:
+   the header polls the Wi-Fi state, the cover job downloads through them */
+static int net_rc_load, net_rc_init;
+static void net_up(void)
+{
+	net_rc_load = sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
+	static char netmem[1024 * 1024];
+	SceNetInitParam p = { netmem, sizeof netmem, 0 };
+	net_rc_init = sceNetInit(&p);   /* 0x80410110 = already initialised */
+	net_ctl = sceNetCtlInit();
+}
+
+/* -1 = no Wi-Fi (off / not connected / unknown), else signal 0..100 */
+int plat_wifi(void)
+{
+	if (net_ctl < 0) return -1;
+	int state = -1;
+	if (sceNetCtlInetGetState(&state) < 0 || state != SCE_NETCTL_STATE_CONNECTED) return -1;
+	SceNetCtlInfo info;
+	memset(&info, 0, sizeof info);
+	if (sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_RSSI_PERCENTAGE, &info) < 0) return 100;   /* connected, strength unknown */
+	return info.rssi_percentage > 100 ? 100 : (int)info.rssi_percentage;
+}
+
 int plat_net_begin(char *err, int n)
 {
 	sceIoRemove(NET_LOG);
 	net_log("VitaDeck network session");
-	net_log("LoadModule NET: 0x%08X", (unsigned)sceSysmoduleLoadModule(SCE_SYSMODULE_NET));
-	static char netmem[1024 * 1024];
-	SceNetInitParam p = { netmem, sizeof netmem, 0 };
-	net_log("sceNetInit: 0x%08X", (unsigned)sceNetInit(&p));   /* 0x80410110 = already initialised */
-	net_ctl = sceNetCtlInit();
+	net_log("LoadModule NET: 0x%08X, sceNetInit: 0x%08X (at startup)", (unsigned)net_rc_load, (unsigned)net_rc_init);
 	int state = -1;
 	sceNetCtlInetGetState(&state);
 	net_log("sceNetCtlInit: 0x%08X, state %d (3 = connected)", (unsigned)net_ctl, state);
@@ -570,8 +590,7 @@ int plat_http_download(const char *url, const char *path)
 void plat_net_end(void)
 {
 	if (net_curl) { curl_easy_cleanup(net_curl); net_curl = NULL; curl_global_cleanup(); }
-	if (net_ctl >= 0) { sceNetCtlTerm(); net_ctl = -1; }
-	sceNetTerm();
+	/* SceNet/SceNetCtl stay up (net_up): the header keeps showing the Wi-Fi state */
 }
 
 int plat_mkdir(const char *path) { return sceIoMkdir(path, 0777); }
@@ -655,6 +674,7 @@ int main(void)
 
 	/* we are running again: a left-over marker from an earlier game is stale */
 	sceIoRemove(RETURN_MARKER);
+	net_up();
 
 	for (int i = 0; i < 2; i++) {
 		SceUID id = sceKernelAllocMemBlock("vl_fb", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, FB_SIZE, NULL);

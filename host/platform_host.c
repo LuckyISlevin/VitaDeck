@@ -12,6 +12,7 @@ uint64_t plat_us(void) { return fake_ms * 1000; }
 unsigned plat_present_us;
 void plat_clock(Clock *c) { c->year = 2026; c->month = 11; c->day = 25; c->hour = 14; c->minute = 32; }
 int plat_battery(int *chg) { *chg = 0; return 82; }
+int plat_wifi(void) { return 80; }
 
 int plat_read_file(const char *path, unsigned char **data, int *len)
 {

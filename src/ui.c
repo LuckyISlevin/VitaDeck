@@ -8,20 +8,45 @@
 #include <ctype.h>
 #include <math.h>
 
-/* ---------- palette ---------- */
-#define C_BG     0x0b1016
-#define C_PANEL  0x121b25
-#define C_HEAD   0x0f161e
-#define C_LINE   0x1c2733
-#define C_LINE2  0x22303e
-#define C_TXT    0xe6edf3
-#define C_TXT2   0xb6c2cf
-#define C_MUTE   0x8fa3b8
-#define C_DIM    0x6f8193
-#define C_ACC    0x3d9bff
-#define C_INK    0x06121f
-#define C_CARD   0x18232f
-#define C_BTN    0x1f2b38
+/* ---------- palette: colour schemes (Settings → "Farbschema") ----------
+   All dark, so the darkened cover backgrounds and the white text on box art
+   keep working. The accents of Glut/Aurora/Amethyst are the alternative
+   accents of the 3E logo draft. */
+typedef struct {
+	const char *name;
+	u32 bg, panel, head, line, line2, txt, txt2, mute, dim, acc, ink, card, btn, track, tile2, edge;
+} Theme;
+static const Theme THEMES[] = {
+	{ "Nacht",    0x0b1016, 0x121b25, 0x0f161e, 0x1c2733, 0x22303e, 0xe6edf3, 0xb6c2cf, 0x8fa3b8, 0x6f8193,
+	              0x3d9bff, 0x06121f, 0x18232f, 0x1f2b38, 0x2a3846, 0x3a4a5c, 0x2f3e4e },
+	{ "Glut",     0x110d0b, 0x1a1512, 0x15110e, 0x2a221c, 0x332a23, 0xf3ece6, 0xcfc2b6, 0xb8a38f, 0x93806f,
+	              0xff8a3d, 0x1f0f05, 0x211a15, 0x2b231d, 0x3d3128, 0x4f4134, 0x4a3c31 },
+	{ "Aurora",   0x0a1210, 0x101b18, 0x0d1714, 0x1a2925, 0x20322d, 0xe6f3ee, 0xb6cfc5, 0x8fb8a8, 0x6f9386,
+	              0x6ee7a8, 0x04170e, 0x15231f, 0x1c2d28, 0x2a403a, 0x38534b, 0x2f4842 },
+	{ "Amethyst", 0x0f0c16, 0x17121f, 0x130f1a, 0x241c30, 0x2b2239, 0xede6f3, 0xc4b6cf, 0xa68fb8, 0x846f93,
+	              0xc792ff, 0x14061f, 0x1d1727, 0x271f33, 0x382c48, 0x4a3c5e, 0x3e3150 },
+	{ "OLED",     0x000000, 0x0b0b0d, 0x050506, 0x18181c, 0x202025, 0xededf0, 0xbdbdc4, 0x95959f, 0x74747d,
+	              0x3d9bff, 0x06121f, 0x111114, 0x1a1a1f, 0x28282e, 0x36363e, 0x2c2c33 },
+};
+#define NTHEMES ((int)(sizeof THEMES / sizeof THEMES[0]))
+static int theme_idx;
+#define TH       (THEMES[theme_idx])
+#define C_BG     TH.bg
+#define C_PANEL  TH.panel
+#define C_HEAD   TH.head
+#define C_LINE   TH.line
+#define C_LINE2  TH.line2
+#define C_TXT    TH.txt
+#define C_TXT2   TH.txt2
+#define C_MUTE   TH.mute
+#define C_DIM    TH.dim
+#define C_ACC    TH.acc
+#define C_INK    TH.ink
+#define C_CARD   TH.card
+#define C_BTN    TH.btn
+#define C_TRACK  TH.track   /* slider/switch tracks, logo tiles */
+#define C_TILE2  TH.tile2   /* lighter logo tile */
+#define C_EDGE   TH.edge    /* toast border */
 #define C_GREEN  0x6ee7a8
 #define C_STAR   0xffd166
 
@@ -55,6 +80,7 @@ typedef struct {
 	Img *ic, *ics;     /* hero (128) and tile (112) icon */
 	Img *cv, *cvs;     /* cached placeholder cover, 128 and 112 */
 	int ic_state;      /* 0 = pending, 1 = ok, 2 = none */
+	unsigned char *ica, *icsa;   /* alpha of ic/ics before flattening (NULL = opaque icon), for recolouring */
 	Img *bg;           /* hero background (HERO_W x HERO_H, blurred + darkened, opaque) */
 	Img *box, *boxh;   /* box art: tile (TILE x TILE_H) and hero (HBOX_W x HBOX_H), opaque */
 	Img *bgs;          /* small blurred background (BGS_W x BGS_H), source of bg and of the cache */
@@ -185,6 +211,8 @@ static void load_state(void)
 			if (a) { a->fav = fav; a->last = last; a->hidden = hid != 0; }
 		} else if (sscanf(line, "#bright %d", &fav) == 1) {
 			S.bright = fav;
+		} else if (sscanf(line, "#theme %d", &fav) == 1) {
+			theme_idx = fav >= 0 && fav < NTHEMES ? fav : 0;
 		}
 		line = strtok(NULL, "\n");
 	}
@@ -237,7 +265,7 @@ static void save_state(void)
 	int cap = 64 + napps * 48, n = 0;
 	char *s = malloc(cap);
 	if (!s) return;
-	n += snprintf(s + n, cap - n, "#bright %d\n", S.bright);
+	n += snprintf(s + n, cap - n, "#bright %d\n#theme %d\n", S.bright, theme_idx);
 	for (int i = 0; i < napps; i++)
 		if (apps[i].fav || apps[i].last || apps[i].hidden)
 			n += snprintf(s + n, cap - n, "%s %d %d %d\n", apps[i].id, apps[i].fav, apps[i].last, apps[i].hidden);
@@ -349,6 +377,35 @@ static void flatten(Img *im, u32 bg)
 	gfx_end_target();
 }
 
+static unsigned char *alpha_of(const Img *im)
+{
+	if (!im || im->opaque) return NULL;
+	int n = im->w * im->h;
+	unsigned char *m = malloc(n);
+	if (m) for (int i = 0; i < n; i++) m[i] = im->px[i] >> 24;
+	return m;
+}
+
+/* flattened pixel = a*icon + (1-a)*old  →  + (1-a)*(new - old) gives the same
+   icon on the new card colour, without decoding the PNG again */
+static void recolor(Img *im, const unsigned char *alpha, u32 oldc, u32 newc)
+{
+	if (!im || !alpha) return;
+	int d[3];
+	for (int k = 0; k < 3; k++) d[k] = (int)((newc >> (8 * k)) & 0xFF) - (int)((oldc >> (8 * k)) & 0xFF);
+	int n = im->w * im->h;
+	for (int i = 0; i < n; i++) {
+		int t = 255 - alpha[i];
+		if (!t) continue;
+		u32 p = im->px[i], o = p & 0xFF000000u;
+		for (int k = 0; k < 3; k++) {
+			int c = (int)((p >> (8 * k)) & 0xFF) + (t * d[k] + (d[k] < 0 ? -127 : 127)) / 255;
+			o |= (u32)(c < 0 ? 0 : c > 255 ? 255 : c) << (8 * k);
+		}
+		im->px[i] = o;
+	}
+}
+
 static void load_icon(App *a)
 {
 	a->ic_state = 2;
@@ -366,7 +423,10 @@ static void load_icon(App *a)
 	if (!im) return;
 	a->ics = img_scaled(im, TILE, TILE);
 	/* pre-composite onto the card colour (what used to be drawn underneath
-	   every frame), so both images are opaque and blit as plain row copies */
+	   every frame), so both images are opaque and blit as plain row copies;
+	   keep the alpha so a colour scheme change can swap the card colour */
+	a->ica = alpha_of(im);
+	a->icsa = alpha_of(a->ics);
 	flatten(im, rgb(C_CARD));
 	flatten(a->ics, rgb(C_CARD));
 	a->ic = im;
@@ -931,6 +991,31 @@ static void battery_icon(int x, int y, int pct, int chg)
 	}
 }
 
+/* Wi-Fi: polled every 2 s in ui_frame (an IPC call, not every frame) */
+static int wifi_level = -1;   /* -1 = not connected, else 1..3 bars */
+static int wifi_bars(int pct) { return pct < 0 ? -1 : pct >= 67 ? 3 : pct >= 34 ? 2 : 1; }
+
+static void arc(float cx, float cy, float r, float th, u32 c)
+{
+	const float a0 = -2.36f, a1 = -0.785f;   /* -135° .. -45°: an upward fan */
+	float px = cx + cosf(a0) * r, py = cy + sinf(a0) * r;
+	for (int i = 1; i <= 8; i++) {
+		float a = a0 + (a1 - a0) * i / 8, x = cx + cosf(a) * r, y = cy + sinf(a) * r;
+		gfx_line(px, py, x, y, th, c, 255);
+		px = x; py = y;
+	}
+}
+
+static void wifi_icon(int x, int y, int bars)   /* 20x15 box, x/y = top left */
+{
+	float cx = x + 10, cy = y + 14;
+	u32 on = rgb(C_TXT2), off = rgb(C_TRACK);
+	gfx_circle(cx, cy - 1, 1.8f, on, 255);
+	arc(cx, cy, 5.5f, 2.0f, bars >= 1 ? on : off);
+	arc(cx, cy, 9.5f, 2.0f, bars >= 2 ? on : off);
+	arc(cx, cy, 13.5f, 2.0f, bars >= 3 ? on : off);
+}
+
 static void header(const char *title)
 {
 	gfx_rect(0, 0, SCR_W, 40, rgb(C_HEAD), 255);
@@ -947,7 +1032,9 @@ static void header(const char *title)
 		x -= 18 + text_w(FONT_REG, FS(13), buf);
 		text(FONT_REG, FS(13), x, 13, buf, rgb(C_TXT2), 255);
 		battery_icon(x - 32, 14, pct, chg);
+		x -= 32;
 	}
+	if (wifi_level > 0) wifi_icon(x - 34, 11, wifi_level);   /* hidden without a connection, like the system bar */
 }
 
 /* simple stroke icons, 18px box */
@@ -1000,7 +1087,7 @@ static void draw_logo(float x, float y, float size, u32 bg)
 {
 	float k = size / 120.f;
 	int r10 = (int)(L(10) + 0.5f);
-	gfx_rrect((int)(x + L(8)), (int)(y + L(8)), (int)L(46), (int)L(46), r10, rgb(0x2a3846), 255);
+	gfx_rrect((int)(x + L(8)), (int)(y + L(8)), (int)L(46), (int)L(46), r10, rgb(C_TRACK), 255);
 	/* focus ring = 3E's <rect x=59 y=3 w=58 h=58 rx=15 stroke-width=3>: outer accent, inner background */
 	gfx_rrect((int)(x + L(57.5f)), (int)(y + L(1.5f)), (int)(L(61) + 0.5f), (int)(L(61) + 0.5f), (int)(L(16.5f) + 0.5f), rgb(C_ACC), 255);
 	gfx_rrect((int)(x + L(60.5f)), (int)(y + L(4.5f)), (int)(L(55) + 0.5f), (int)(L(55) + 0.5f), (int)(L(13.5f) + 0.5f), bg, 255);
@@ -1013,8 +1100,8 @@ static void draw_logo(float x, float y, float size, u32 bg)
 	gfx_line(ax, ay, bx, by, th, ink, 255);
 	gfx_line(bx, by, cx, cy, th, ink, 255);
 	gfx_line(cx, cy, ax, ay, th, ink, 255);
-	gfx_rrect((int)(x + L(8)), (int)(y + L(66)), (int)L(46), (int)L(46), r10, rgb(0x3a4a5c), 255);
-	gfx_rrect((int)(x + L(65)), (int)(y + L(66)), (int)L(46), (int)L(46), r10, rgb(0x2a3846), 255);
+	gfx_rrect((int)(x + L(8)), (int)(y + L(66)), (int)L(46), (int)L(46), r10, rgb(C_TILE2), 255);
+	gfx_rrect((int)(x + L(65)), (int)(y + L(66)), (int)L(46), (int)L(46), r10, rgb(C_TRACK), 255);
 }
 #undef L
 
@@ -1064,7 +1151,7 @@ static void top_key(int *k)
 	k[7] = c.hour * 60 + c.minute;
 	k[8] = plat_battery(&chg); k[9] = chg;
 	k[10] = (int)hash_s(a->id);
-	k[11] = (a->bg != NULL) | (a->boxh != NULL) << 1;
+	k[11] = (a->bg != NULL) | (a->boxh != NULL) << 1 | (wifi_level + 1) << 2;
 }
 
 static void draw_hero(int ai)
@@ -1282,7 +1369,7 @@ static void draw_menu(void)
 
 /* ---------- settings (return/autostart plugin) ---------- */
 enum { CF_INSTALL = 1, CF_UNINSTALL };
-#define NSET 4
+#define NSET 5
 #define SET_W 440
 
 /* ---------- box art download (HexFlow-Covers, CC BY-NC-SA 4.0) ----------
@@ -1384,7 +1471,7 @@ static void settings_open(void)
 
 static void toggle_sw(int x, int y, int on)
 {
-	gfx_rrect(x, y, 44, 24, 12, rgb(on ? C_ACC : 0x2a3846), 255);
+	gfx_rrect(x, y, 44, 24, 12, rgb(on ? C_ACC : C_TRACK), 255);
 	gfx_circle(on ? x + 32 : x + 12, y + 12, 9, rgb(on ? 0xffffff : C_MUTE), 255);
 }
 
@@ -1398,18 +1485,34 @@ static void draw_set(void)
 	text(FONT_BOLD, FS(15), 52, 21, "Einstellungen", rgb(C_TXT), 255);
 	gfx_rect(20, 60, SET_W - 40, 1, rgb(C_LINE2), 255);
 
-	static const char *lbl[NSET] = { "Nach Spielende zurück", "Beim Start öffnen", "Rückkehr-Plugin", "Cover laden" };
+	static const char *lbl[NSET] = { "Nach Spielende zurück", "Beim Start öffnen", "Rückkehr-Plugin", "Cover laden", "Farbschema" };
 	static const char *sub[NSET] = { "Öffnet VitaDeck wieder, wenn das Spiel endet",
-	                                 "VitaDeck startet nach dem Einschalten der Vita", NULL, NULL };
+	                                 "VitaDeck startet nach dem Einschalten der Vita", NULL, NULL, NULL };
+	/* cards are 56 px (+8 gap) so five of them and the notes fit above the footer;
+	   the content below is laid out for 64 px cards, hence the -4 shift */
 	int y = 70;
 	for (int i = 0; i < NSET; i++) {
-		int on = i == S.si, h = 64;
+		int on = i == S.si, h = 56;
 		gfx_rrect(16, y, SET_W - 32, h, 10, rgb(C_CARD), 255);
 		if (on) { gfx_rrect(14, y - 2, SET_W - 28, h + 4, 12, rgb(C_ACC), 255); gfx_rrect(16, y, SET_W - 32, h, 10, rgb(C_CARD), 255); }
+		hit(16, y, SET_W - 32, h, H_SET, i, 0);
+		y -= 4;
 		text(FONT_BOLD, FS(14), 30, y + 10, lbl[i], rgb(C_TXT), 255);
 		if (i < 2) {
 			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 130, sub[i], rgb(C_MUTE), 255);
 			toggle_sw(SET_W - 76, y + 20, i == 0 ? S.set_ret : S.set_as);
+		} else if (i == 4) {
+			char st[64];
+			snprintf(st, sizeof st, "%s · ←/→ wechseln", TH.name);
+			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 230, st, rgb(C_MUTE), 255);
+			/* one swatch per scheme: its accent on its background, the current one ringed */
+			for (int k = 0; k < NTHEMES; k++) {
+				int cx = SET_W - 52 - (NTHEMES - 1 - k) * 30, cy = y + 32;
+				if (k == theme_idx) gfx_circle(cx, cy, 13, rgb(C_TXT), 255);
+				gfx_circle(cx, cy, 11, rgb(THEMES[k].bg == 0 ? 0x2c2c33 : THEMES[k].line2), 255);
+				gfx_circle(cx, cy, 9, rgb(THEMES[k].bg), 255);
+				gfx_circle(cx, cy, 6, rgb(THEMES[k].acc), 255);
+			}
 		} else if (i == 3) {
 			char st[128];
 			if (cov.state == 1) snprintf(st, sizeof st, "Lade %d von %d …", cov.done, cov.total);
@@ -1417,7 +1520,7 @@ static void draw_set(void)
 			else snprintf(st, sizeof st, "%d von %d vorhanden · aus HexFlow-Covers", cov_have_now, napps);
 			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 170, st, rgb(C_MUTE), 255);
 			if (cov.state == 1) {   /* progress bar instead of the button */
-				gfx_rrect(SET_W - 132, y + 28, 100, 8, 4, rgb(0x2a3846), 255);
+				gfx_rrect(SET_W - 132, y + 28, 100, 8, 4, rgb(C_TRACK), 255);
 				int pw = cov.total ? 100 * cov.done / cov.total : 0;
 				if (pw > 0) gfx_rrect(SET_W - 132, y + 28, pw < 8 ? 8 : pw, 8, 4, rgb(C_ACC), 255);
 			} else {
@@ -1438,8 +1541,8 @@ static void draw_set(void)
 			gfx_rrect(SET_W - 32 - aw, y + 16, aw, 32, 8, rgb(S.plug == PLUG_INSTALLED ? C_BTN : C_ACC), 255);
 			text(FONT_BOLD, FS(13), SET_W - 32 - aw + 14, y + 23, act, rgb(S.plug == PLUG_INSTALLED ? C_TXT : C_INK), 255);
 		}
-		hit(16, y, SET_W - 32, h, H_SET, i, 0);
-		y += h + 10;
+		y += 4;   /* undo the content shift */
+		y += h + 8;
 	}
 	/* the switches only do something once the plugin is loaded */
 	const char *note = S.plug == PLUG_NONE ? "Schalter und Spielzeit-Erfassung wirken erst mit installiertem Plugin."
@@ -1477,9 +1580,40 @@ static void draw_confirm(void)
 	footer(NULL, hs, 2);
 }
 
+/* switch the colour scheme right away, without touching the memory card:
+   icons are pre-composited onto C_CARD → recoloured via their alpha;
+   hero backgrounds are darkened towards C_PANEL → rebuilt from the small blur
+   (a few ms each, on the job thread, as they are needed); placeholders redrawn */
+static Img *ctx_img;          /* defined with the context menu below */
+static const Img *ctx_src;
+static void theme_step(int d)
+{
+	u32 oldc = rgb(C_CARD);
+	theme_idx = (theme_idx + d + NTHEMES) % NTHEMES;
+	u32 newc = rgb(C_CARD);
+	for (int i = 0; i < napps; i++) {
+		App *a = &apps[i];
+		if (a->ic_state == 1) { recolor(a->ic, a->ica, oldc, newc); recolor(a->ics, a->icsa, oldc, newc); }
+		img_free(a->cv); img_free(a->cvs); a->cv = a->cvs = NULL;
+		if (a->bg) { img_free(a->bg); a->bg = NULL; a->bg_state = 0; }
+	}
+	bg_loaded = 0;
+	/* the visible hero right away (no flash of the plain gradient) */
+	int ai = nrows ? home_app() : -1;
+	if (ai >= 0 && apps[ai].bgs) {
+		apps[ai].bg = bg_from_small(apps[ai].bgs);
+		if (apps[ai].bg) { apps[ai].bg_state = 1; apps[ai].bg_tick = ++bg_clock; bg_loaded = 1; }
+	}
+	img_free(ctx_img); ctx_img = NULL; ctx_src = NULL;
+	under_ok = 0; top_ok = 0;
+	S.dirty = 1;
+	save_state();
+}
+
 static void settings_act(int i)
 {
 	S.si = i;
+	if (i == 4) { theme_step(1); return; }
 	if (i == 0 || i == 1) {
 		if (i == 0) S.set_ret = !S.set_ret; else S.set_as = !S.set_as;
 		if (plat_plugin_cfg_save(S.set_as, S.set_ret) < 0) toast("Einstellung konnte nicht gespeichert werden");
@@ -1512,7 +1646,7 @@ static void confirm_act(void)
 
 static void slider(int x, int y, int w, int pct, int focus)
 {
-	gfx_rrect(x, y, w, 8, 4, rgb(0x2a3846), 255);
+	gfx_rrect(x, y, w, 8, 4, rgb(C_TRACK), 255);
 	int fw = w * pct / 100;
 	if (fw > 0) gfx_rrect(x, y, fw < 8 ? 8 : fw, 8, 4, rgb(C_ACC), 255);
 	gfx_circle(x + fw, y + 4, focus ? 9 : 7, rgb(0xffffff), 255);
@@ -1637,7 +1771,7 @@ static void draw_toast(void)
 	if (!S.toast[0]) return;
 	int tw = text_w(FONT_REG, FS(13), S.toast);
 	int w = tw + 36, x = (SCR_W - w) / 2, y = SCR_H - 36 - 52;
-	gfx_rrect(x, y, w, 38, 8, rgb(0x2f3e4e), 255);
+	gfx_rrect(x, y, w, 38, 8, rgb(C_EDGE), 255);
 	gfx_rrect(x + 1, y + 1, w - 2, 36, 7, rgb(C_BTN), 255);
 	text(FONT_REG, FS(13), x + 18, y + 11, S.toast, rgb(C_TXT), 255);
 }
@@ -1694,6 +1828,7 @@ static void free_apps(void)
 {
 	for (int i = 0; i < napps; i++) {
 		img_free(apps[i].ic); img_free(apps[i].ics);
+		free(apps[i].ica); free(apps[i].icsa);
 		img_free(apps[i].cv); img_free(apps[i].cvs);
 		app_free_art(&apps[i]);
 	}
@@ -1819,6 +1954,7 @@ static void press(unsigned b)
 		else if (b == B_DOWN) S.si = S.si < NSET - 1 ? S.si + 1 : NSET - 1;
 		else if (b == B_X) settings_act(S.si);
 		else if ((b == B_LEFT || b == B_RIGHT) && S.si < 2) settings_act(S.si);
+		else if ((b == B_LEFT || b == B_RIGHT) && S.si == 4) theme_step(b == B_LEFT ? -1 : 1);
 		else if (b == B_O) { S.ov = OV_MENU; S.mi = 3; }
 		else if (b == B_START) S.ov = OV_NONE;
 		return;
@@ -2059,6 +2195,7 @@ void ui_init(void)
 	S.vol = v < 0 ? 0 : v;
 	S.dirty = 1;
 	S.last_minute = -1;
+	load_state();   /* no apps yet: only picks up brightness and the colour scheme for the boot screen */
 	unsigned char *d; int len;
 	if (plat_read_file(plat_res("Lato-Regular.ttf"), &d, &len) >= 0) font_load(FONT_REG, d);
 	if (plat_read_file(plat_res("Lato-Bold.ttf"), &d, &len) >= 0) font_load(FONT_BOLD, d);
@@ -2165,6 +2302,12 @@ int ui_frame(const Input *in, u32 *buf)
 
 	Clock c; plat_clock(&c);
 	if (c.minute != S.last_minute) { S.last_minute = c.minute; S.dirty = 1; under_ok = 0; }
+	static uint64_t wifi_next;
+	if (now >= wifi_next) {
+		wifi_next = now + 2000;
+		int w = wifi_bars(plat_wifi());
+		if (w != wifi_level) { wifi_level = w; S.dirty = 1; under_ok = 0; }
+	}
 
 	pump_icons();
 	pump_bg(now);
