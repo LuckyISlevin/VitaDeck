@@ -1,11 +1,7 @@
 # VitaDeck – Feature ideas
 
-As of 2026-11-27, after v0.8. Sorted by value relative to effort.
-**Done so far: 1–6 and 14.** Next candidates: 7–12.
-
-## Medium effort, high value
-7. **Recognise PSP/PS1 bubbles** – Adrenaline bubbles currently end up under "Homebrew"; use the category in `param.sfo` to show them as their own "PSP" row (no launching of ISOs by VitaDeck itself).
-8. **Home screen background from the hero image** – blurred and darkened over the whole screen, cached like the header/hero.
+As of 2026-11-27, after v0.9. Sorted by value relative to effort.
+**Done so far: 1–8 and 14.** Next: 9–12.
 
 ## Larger
 9. **Custom collections** – rows such as "Racing" or "With friends", assigned via the options menu.
@@ -25,3 +21,5 @@ As of 2026-11-27, after v0.8. Sorted by value relative to effort.
 - 3. Options menu (△) shows title ID, version (update version if one is installed) and size incl. update
 - 4. Quick access shows free space on ux0:
 - 14. Per-game clocks via PSVshell (installed by the user): the options menu writes its profiles ur0:data/PSVshell/profiles/<TITLEID> – Standard (none), Schnell (CPU 444 / GPU 222 / BUS 222 / XBAR 166), Maximal (CPU 500). Profile = 28 bytes (1-byte enums on arm-vita-eabi).
+- 7. PSP games: official PSP titles in ux0:pspemu/PSP/GAME (metadata from ur0:appmeta or EBOOT.PBP, icon cached in ux0:data/VitaDeck/pspicons) and Adrenaline bubbles (data/boot.inf) get the category PSP: own home row, library tab (only when present), covers from HexFlow-Covers/PSP
+- 8. Home screen background: the hero app's blurred background, darkened and faded towards the rows, built once the focus rests (250 ms)

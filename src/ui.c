@@ -51,7 +51,7 @@ static int theme_idx;
 #define C_STAR   0xffd166
 
 /* shown in the main menu; keep in sync with APP_VER in build.ps1 / CMakeLists.txt / Makefile */
-#define VD_VERSION "v0.8"
+#define VD_VERSION "v0.9"
 
 /* UI font size: +2 px over the original layout sizes (chip labels <= 10 px stay) */
 #define FS(n) ((n) <= 10 ? (n) : (n) + 2)
@@ -93,14 +93,20 @@ static App *apps;
 static int napps;
 
 typedef struct { const char *title; int n; int idx[MAXA]; } Row;
-static Row rows[5];
+#define MAXROWS 6   /* recent, favourites, Vita, PSP, homebrew, emulators */
+static Row rows[MAXROWS];
 static int nrows;
 static int lib[MAXA], nlib;
 static int lists_dirty = 1;
 
-static const char *TABS[] = { "Alle", "Vita", "Homebrew", "Emulatoren", "Favoriten", "Ausgeblendet" };
+/* library tabs: logical ids (index into TABS); S.tab indexes the *visible* list,
+   in which "PSP" only appears with PSP content and "Ausgeblendet" only with hidden apps */
+static const char *TABS[] = { "Alle", "Vita", "Homebrew", "Emulatoren", "Favoriten", "Ausgeblendet", "PSP" };
+#define TAB_FAV    4
 #define TAB_HIDDEN 5
-static int ntabs(void);   /* 6 while any app is hidden, else 5 */
+#define TAB_PSP    6
+static int ntabs(void);
+static int tab_id(int visible);
 static const char *SORTS[] = { "A–Z", "Zuletzt gestartet", "Spielzeit" };
 #define NSORTS 3
 
@@ -118,8 +124,8 @@ static struct {
 	char toast[128];
 	uint64_t toast_until;
 	int dirty;
-	float sy, sx[5], ly;  /* animated scroll */
-	int hoff[5], loff;    /* scroll targets: first visible column per home row / first library row */
+	float sy, sx[MAXROWS], ly;  /* animated scroll */
+	int hoff[MAXROWS], loff;    /* scroll targets: first visible column per home row / first library row */
 	int last_minute;
 	int si, set_as, set_ret, plug, plug_old, confirm;   /* settings overlay */
 	char plug_cfg[32];
@@ -193,7 +199,7 @@ static void fmt_size(int64_t b, char *out, int n)
 
 static const char *cat_name(int c)
 {
-	return c == CAT_VITA ? "Vita" : c == CAT_EMU ? "Emulator" : "Homebrew";
+	return c == CAT_VITA ? "Vita" : c == CAT_EMU ? "Emulator" : c == CAT_PSP ? "PSP" : "Homebrew";
 }
 
 /* ---------- persistence ---------- */
@@ -312,20 +318,28 @@ static int cmp_play(const void *x, const void *y)
 	return ci_cmp(a->title, b->title);
 }
 
-static int ntabs(void)
+static int tab_list(int out[])
 {
-	for (int i = 0; i < napps; i++) if (apps[i].hidden) return TAB_HIDDEN + 1;
-	return TAB_HIDDEN;
+	int psp = 0, hid = 0, n = 0;
+	for (int i = 0; i < napps; i++) { if (apps[i].hidden) hid = 1; else if (apps[i].cat == CAT_PSP) psp = 1; }
+	out[n++] = 0; out[n++] = 1;
+	if (psp) out[n++] = TAB_PSP;
+	out[n++] = 2; out[n++] = 3; out[n++] = TAB_FAV;
+	if (hid) out[n++] = TAB_HIDDEN;
+	return n;
 }
 
-static int lib_filter(int tab, int out[])
+static int ntabs(void) { int t[8]; return tab_list(t); }
+static int tab_id(int visible) { int t[8], n = tab_list(t); return visible >= 0 && visible < n ? t[visible] : 0; }
+
+static int lib_filter(int tab, int out[])   /* tab = logical id */
 {
 	int n = 0;
 	for (int i = 0; i < napps && n < MAXA; i++) {
 		App *a = &apps[i];
 		int ok = tab == TAB_HIDDEN ? a->hidden :
 		         !a->hidden && (tab == 0 || (tab == 1 && a->cat == CAT_VITA) || (tab == 2 && a->cat == CAT_HOMEBREW) ||
-		                        (tab == 3 && a->cat == CAT_EMU) || (tab == 4 && a->fav));
+		                        (tab == 3 && a->cat == CAT_EMU) || (tab == TAB_FAV && a->fav) || (tab == TAB_PSP && a->cat == CAT_PSP));
 		if (ok) out[n++] = i;
 	}
 	return n;
@@ -346,19 +360,19 @@ static void rebuild(void)
 		memcpy(r->idx, tmp, r->n * sizeof(int));
 		nrows++;
 	}
-	static const char *ttl[] = { NULL, NULL, "Favoriten", "Vita-Spiele", "Homebrew", "Emulatoren" };
-	int tabs[] = { 4, 1, 2, 3 };
-	for (int k = 0; k < 4; k++) {
+	static const char *ttl[] = { "Favoriten", "Vita-Spiele", "PSP-Spiele", "Homebrew", "Emulatoren" };
+	int tabs[] = { TAB_FAV, 1, TAB_PSP, 2, 3 };
+	for (int k = 0; k < 5 && nrows < MAXROWS; k++) {
 		n = lib_filter(tabs[k], tmp);
 		if (!n) continue;
 		qsort(tmp, n, sizeof(int), cmp_title);
 		r = &rows[nrows++];
-		r->title = ttl[k + 2];
+		r->title = ttl[k];
 		r->n = n;
 		memcpy(r->idx, tmp, n * sizeof(int));
 	}
-	if (S.tab >= ntabs()) S.tab = 0;   /* "Ausgeblendet" vanishes once it is empty */
-	nlib = lib_filter(S.tab, lib);
+	if (S.tab >= ntabs()) S.tab = 0;   /* "PSP" / "Ausgeblendet" vanish once empty */
+	nlib = lib_filter(tab_id(S.tab), lib);
 	qsort(lib, nlib, sizeof(int), S.sort == 2 ? cmp_play : S.sort == 1 ? cmp_last : cmp_title);
 	if (S.hrow >= nrows) S.hrow = nrows ? nrows - 1 : 0;
 	if (nrows && S.hcol >= rows[S.hrow].n) S.hcol = rows[S.hrow].n - 1;
@@ -430,7 +444,21 @@ static void load_icon(App *a)
 	Img *im = img_from_rgba(rgba, w, h);
 	stbi_image_free(rgba);
 	if (!im) return;
-	if (w != 128 || h != 128) { Img *s = img_scaled(im, 128, 128); img_free(im); im = s; }
+	if (w != h && w > 0 && h > 0) {
+		/* non-square icons (PSP: 144x80) are fitted, not stretched: centred on a transparent square */
+		int nw = w > h ? 128 : 128 * w / h, nh = w > h ? 128 * h / w : 128;
+		Img *s = img_scaled(im, nw, nh);
+		img_free(im);
+		im = NULL;
+		Img *sq = s ? malloc(sizeof(Img)) : NULL;
+		if (sq && (sq->px = calloc(128 * 128, 4))) {
+			sq->w = sq->h = 128; sq->avg = s->avg; sq->opaque = 0;
+			for (int j = 0; j < nh; j++)
+				memcpy(sq->px + (size_t)((128 - nh) / 2 + j) * 128 + (128 - nw) / 2, s->px + (size_t)j * nw, (size_t)nw * 4);
+			im = sq;
+		} else free(sq);
+		img_free(s);
+	} else if (w != 128) { Img *s = img_scaled(im, 128, 128); img_free(im); im = s; }
 	if (!im) return;
 	a->ics = img_scaled(im, TILE, TILE);
 	/* pre-composite onto the card colour (what used to be drawn underneath
@@ -599,6 +627,21 @@ static Img *bg_from_small(const Img *small)
 	return big;
 }
 
+/* scale to w x h keeping the aspect: crop the centre (worker-safe, no gfx state) */
+static Img *scale_fill(const Img *src, int w, int h)
+{
+	int sw = src->w, sh = src->h, cw = sw, ch = sh, cx = 0, cy = 0;
+	if ((int64_t)sw * h > (int64_t)sh * w) { cw = (int)((int64_t)sh * w / h); cx = (sw - cw) / 2; }
+	else { ch = (int)((int64_t)sw * h / w); cy = (sh - ch) / 2; }
+	if (cw == sw && ch == sh) return img_scaled(src, w, h);
+	Img crop = { .w = cw, .h = ch, .px = malloc((size_t)cw * ch * 4), .opaque = src->opaque };
+	if (!crop.px) return img_scaled(src, w, h);
+	for (int j = 0; j < ch; j++) memcpy(crop.px + (size_t)j * cw, src->px + (size_t)(cy + j) * sw + cx, (size_t)cw * 4);
+	Img *r = img_scaled(&crop, w, h);
+	free(crop.px);
+	return r;
+}
+
 static Img *decode_file(const char *path)
 {
 	unsigned char *d; int len;
@@ -697,8 +740,8 @@ static void bg_work(void *arg)
 		} else if (size > 0) {
 			Img *cover = decode_file(path);
 			if (cover) {
-				bgjob.box = img_scaled(cover, TILE, TILE_H);
-				bgjob.boxh = img_scaled(cover, HBOX_W, HBOX_H);
+				bgjob.box = scale_fill(cover, TILE, TILE_H);   /* PSP/PS1 covers have other aspects: crop, don't stretch */
+				bgjob.boxh = scale_fill(cover, HBOX_W, HBOX_H);
 				to_opaque(bgjob.box, rgb(C_CARD));
 				to_opaque(bgjob.boxh, rgb(C_CARD));
 				small = make_blur_small(cover);
@@ -1148,7 +1191,8 @@ static void draw_boot(void)
 #define HERO_TX    (14 + HBOX_W + 20)   /* text column right of the box art */
 #define HERO_BTN_X (24 + HERO_TX)
 #define HERO_BTN_Y (HERO_Y + HERO_DY + 106)
-#define TOP_KEYN   12
+#define TOP_KEYN   13
+static int homebg_gen;   /* home background generation (defined with the home background below) */
 static u32 *topbuf;
 static int top_ok, top_keyv[TOP_KEYN];
 
@@ -1163,6 +1207,7 @@ static void top_key(int *k)
 	k[8] = plat_battery(&chg); k[9] = chg;
 	k[10] = (int)hash_s(a->id);
 	k[11] = (a->bg != NULL) | (a->boxh != NULL) << 1 | (wifi_level + 1) << 2;
+	k[12] = homebg_gen;   /* the full-screen background shows around the hero too */
 }
 
 static void draw_hero(int ai)
@@ -1222,6 +1267,74 @@ static void draw_hero(int ai)
 	text(FONT_REG, FS(12), hx, by + 11, a->fav ? "Favorit entfernen" : "Favorit", rgb(C_TXT2), 255);
 }
 
+/* ---------- home background (ROADMAP 8) ----------
+   The hero app's small blurred background (bgs), cropped to the screen's aspect,
+   scaled to full screen and darkened towards C_BG. Built on the UI thread (a few ms,
+   pure pixel work) once the focus has rested for a moment; drawn with row copies. */
+static u32 *homebg;
+static char homebg_id[16];
+static int homebg_gen;          /* bumped on every rebuild – part of the hero cache key */
+static uint64_t homebg_since;
+static int homebg_want = -1;
+
+static void home_bg_build(const App *a)
+{
+	const Img *s = a ? a->bgs : NULL;
+	if (!s) { if (homebg_id[0]) { homebg_id[0] = 0; homebg_gen++; } return; }
+	if (!homebg) homebg = malloc(SCR_W * SCR_H * 4);
+	if (!homebg) return;
+	/* crop the centre of the wide hero strip to 960:544 */
+	float cw = s->h * (float)SCR_W / SCR_H, cx = (s->w - cw) * 0.5f;
+	if (cw > s->w) { cw = (float)s->w; cx = 0; }
+	u32 bg = rgb(C_BG);
+	int br = bg & 0xFF, bgc = (bg >> 8) & 0xFF, bb = (bg >> 16) & 0xFF;
+	for (int y = 0; y < SCR_H; y++) {
+		float fy = (y + 0.5f) * s->h / SCR_H - 0.5f;
+		int y0 = (int)fy; float ty = fy - y0;
+		if (y0 < 0) { y0 = 0; ty = 0; }
+		int y1 = y0 + 1 < s->h ? y0 + 1 : y0;
+		/* fade to the plain background towards the bottom, where the rows are */
+		int keep = 70 - 40 * y / SCR_H;   /* % of the picture: 70 at the top, 30 at the bottom */
+		for (int x = 0; x < SCR_W; x++) {
+			float fx = cx + (x + 0.5f) * cw / SCR_W - 0.5f;
+			int x0 = (int)fx; float tx = fx - x0;
+			if (x0 < 0) { x0 = 0; tx = 0; }
+			int x1 = x0 + 1 < s->w ? x0 + 1 : x0;
+			u32 p00 = s->px[y0 * s->w + x0], p01 = s->px[y0 * s->w + x1], p10 = s->px[y1 * s->w + x0], p11 = s->px[y1 * s->w + x1];
+			u32 o = 0xFF000000u;
+			for (int k = 0; k < 3; k++) {
+				int sh = 8 * k;
+				float c = ((p00 >> sh) & 0xFF) * (1 - tx) * (1 - ty) + ((p01 >> sh) & 0xFF) * tx * (1 - ty) +
+				          ((p10 >> sh) & 0xFF) * (1 - tx) * ty + ((p11 >> sh) & 0xFF) * tx * ty;
+				int base = k == 0 ? br : k == 1 ? bgc : bb;
+				int v = (int)(c * 0.35f * keep / 100 + base * (100 - keep * 0.35f) / 100);   /* darkened */
+				o |= (u32)(v > 255 ? 255 : v) << sh;
+			}
+			homebg[y * SCR_W + x] = o;
+		}
+	}
+	snprintf(homebg_id, sizeof homebg_id, "%s", a->id);
+	homebg_gen++;
+}
+
+/* called every frame on the home screen: rebuild once the hero app has been stable for 250 ms */
+static void home_bg_pump(uint64_t now)
+{
+	if (S.view != V_HOME || !nrows) return;
+	int ai = home_app();
+	if (ai < 0) return;
+	if (ai != homebg_want) { homebg_want = ai; homebg_since = now; return; }
+	if (now - homebg_since < 250) return;
+	const App *a = &apps[ai];
+	if (a->bgs && strcmp(homebg_id, a->id)) { home_bg_build(a); S.dirty = 1; }
+}
+
+static void home_bg_rows(int y0, int y1)
+{
+	if (!homebg || !homebg_id[0]) { gfx_rect(0, y0, SCR_W, y1 - y0, rgb(C_BG), 255); return; }
+	memcpy(gfx_buffer() + (size_t)y0 * SCR_W, homebg + (size_t)y0 * SCR_W, (size_t)(y1 - y0) * SCR_W * 4);
+}
+
 static void draw_home(void)
 {
 	uint64_t t = plat_us();
@@ -1232,11 +1345,11 @@ static void draw_home(void)
 		top_key(key);
 		if (top_ok && !memcmp(key, top_keyv, sizeof key)) {
 			memcpy(gfx_buffer(), topbuf, SCR_W * HOME_TOP * 4);
-			gfx_rect(0, HOME_TOP, SCR_W, SCR_H - HOME_TOP, rgb(C_BG), 255);
+			home_bg_rows(HOME_TOP, SCR_H);
 			hit(HERO_BTN_X, HERO_BTN_Y, 136, 36, H_HERO, 0, 0);
 			perf_add(0, &t);
 		} else {
-			gfx_clear(rgb(C_BG));
+			home_bg_rows(0, SCR_H);
 			header("Startseite");
 			perf_add(0, &t);
 			draw_hero(home_app());
@@ -1294,7 +1407,7 @@ static void draw_lib(void)
 	int tmp[MAXA];
 	for (int t = 0, nt = ntabs(); t < nt; t++) {
 		char lbl[48];
-		snprintf(lbl, sizeof lbl, "%s · %d", TABS[t], lib_filter(t, tmp));
+		snprintf(lbl, sizeof lbl, "%s · %d", TABS[tab_id(t)], lib_filter(tab_id(t), tmp));
 		int on = t == S.tab;
 		int tw = text_w(on ? FONT_BOLD : FONT_REG, FS(13), lbl);
 		if (on) gfx_rrect(x, 46, tw + 26, 32, 6, rgb(C_ACC), 255);
@@ -1305,12 +1418,14 @@ static void draw_lib(void)
 	glyph(x + 2, y, G_R, rgb(C_TXT), rgb(C_BG));
 	char sl[64];
 	snprintf(sl, sizeof sl, "Sortierung: %s", SORTS[S.sort]);
-	text(FONT_REG, FS(12), SCR_W - 20 - text_w(FONT_REG, FS(12), sl), 56, sl, rgb(C_MUTE), 255);
+	int sw = text_w(FONT_REG, FS(12), sl);
+	if (x + 30 + sw < SCR_W - 20)   /* with many tabs there is no room – sorting is in △ too */
+		text(FONT_REG, FS(12), SCR_W - 20 - sw, 56, sl, rgb(C_MUTE), 255);
 
 	int top = 88;
 	if (!nlib) {
-		const char *m = S.tab == 4 ? "Noch keine Favoriten. Drück □ auf einer App, dann taucht sie hier auf."
-		              : S.tab == TAB_HIDDEN ? "Keine ausgeblendeten Apps."
+		const char *m = tab_id(S.tab) == TAB_FAV ? "Noch keine Favoriten. Drück □ auf einer App, dann taucht sie hier auf."
+		              : tab_id(S.tab) == TAB_HIDDEN ? "Keine ausgeblendeten Apps."
 		                                    : "In dieser Kategorie ist nichts installiert.";
 		text(FONT_REG, FS(15), (SCR_W - text_w(FONT_REG, FS(15), m)) / 2, 260, m, rgb(C_MUTE), 255);
 	} else {
@@ -1387,13 +1502,15 @@ enum { CF_INSTALL = 1, CF_UNINSTALL };
    Runs on the job thread: one HTTPS GET per installed app that has no box
    art yet; 404 = no cover in the database. Covers are only stored on the
    device – never bundled with VitaDeck. */
-#define COVER_URL "https://raw.githubusercontent.com/andiweli/hexflow-covers/main/Covers/PSVita/%s.png"
+#define COVER_URL     "https://raw.githubusercontent.com/andiweli/hexflow-covers/main/Covers/PSVita/%s.png"
+#define COVER_URL_PSP "https://raw.githubusercontent.com/andiweli/hexflow-covers/main/Covers/PSP/%s.png"
 
 static struct {
 	volatile int state;        /* 0 idle, 1 running, 2 finished (pending), 3 shown */
 	volatile int done;
 	int total, got, have, missing, failed;
 	char ids[MAXA][16];
+	unsigned char cat[MAXA];   /* app category: PSP covers live in another folder */
 	char msg[128];
 } cov;
 static int cov_have_now;       /* covers on the card when the settings were opened */
@@ -1420,7 +1537,7 @@ static void cover_job(void *arg)
 			snprintf(path, sizeof path, "%s/%s.png", plat_cover_dir(), cov.ids[i]);
 			if (plat_file_exists(path)) cov.have++;
 			else {
-				snprintf(url, sizeof url, COVER_URL, cov.ids[i]);
+				snprintf(url, sizeof url, cov.cat[i] == CAT_PSP ? COVER_URL_PSP : COVER_URL, cov.ids[i]);
 				int r = plat_http_download(url, path);
 				if (r == 0) cov.got++; else if (r == 1) cov.missing++; else cov.failed++;
 			}
@@ -1463,7 +1580,7 @@ static void cover_start(void)
 {
 	if (cov.state == 1) return;
 	cov.total = 0;
-	for (int i = 0; i < napps && cov.total < MAXA; i++) snprintf(cov.ids[cov.total++], 16, "%s", apps[i].id);
+	for (int i = 0; i < napps && cov.total < MAXA; i++) { cov.cat[cov.total] = (unsigned char)apps[i].cat; snprintf(cov.ids[cov.total++], 16, "%s", apps[i].id); }
 	cov.done = cov.got = cov.have = cov.missing = cov.failed = 0;
 	cov.msg[0] = 0;
 	cov.state = 1;
@@ -1611,6 +1728,8 @@ static const Img *ctx_src;
 static void theme_step(int d)
 {
 	u32 oldc = rgb(C_CARD);
+	homebg_id[0] = 0;   /* darkened towards the old C_BG: rebuild */
+	homebg_gen++;
 	theme_idx = (theme_idx + d + NTHEMES) % NTHEMES;
 	u32 newc = rgb(C_CARD);
 	for (int i = 0; i < napps; i++) {
@@ -2188,7 +2307,7 @@ static void swipe_move(int dx, int dy)
 		swipe.axis = SW_OFF;
 		if (S.ov != OV_NONE || y < 44 || y >= SCR_H - 36) return;
 		if (S.view == V_HOME && nrows) {
-			if (horiz && y >= HOME_TOP && S.hrow < 5) { swipe.axis = SW_HOME_H; swipe.row = S.hrow; swipe.base = S.sx[S.hrow]; }
+			if (horiz && y >= HOME_TOP && S.hrow < MAXROWS) { swipe.axis = SW_HOME_H; swipe.row = S.hrow; swipe.base = S.sx[S.hrow]; }
 			else if (!horiz) { swipe.axis = SW_HOME_V; swipe.base = S.sy; }
 		} else if (S.view == V_LIB && y >= 90) {
 			if (horiz) swipe.axis = SW_LIB_H;
@@ -2242,7 +2361,7 @@ static void swipe_end(int dx, int dy)
 		k = k < 0 ? 0 : k > nrows - 1 ? nrows - 1 : k;
 		S.hrow = k;
 		if (S.hcol >= rows[k].n) S.hcol = rows[k].n - 1;
-		if (k < 5) {   /* keep the column if it is visible in that row, else take the nearest visible one */
+		if (k < MAXROWS) {   /* keep the column if it is visible in that row, else take the nearest visible one */
 			if (S.hcol < S.hoff[k]) S.hcol = S.hoff[k];
 			if (S.hcol > S.hoff[k] + 5) S.hcol = S.hoff[k] + 5;
 			if (S.hcol > rows[k].n - 1) S.hcol = rows[k].n - 1;
@@ -2375,7 +2494,7 @@ int ui_frame(const Input *in, u32 *buf)
 		if (nly != S.ly) S.dirty = 1;
 		S.ly = nly;
 	}
-	for (int r = 0; r < nrows && r < 5; r++) {
+	for (int r = 0; r < nrows && r < MAXROWS; r++) {
 		int mx = rows[r].n > 6 ? rows[r].n - 6 : 0;
 		if (S.hoff[r] > mx) S.hoff[r] = mx;
 		if (r == S.hrow) {
@@ -2402,6 +2521,7 @@ int ui_frame(const Input *in, u32 *buf)
 	pump_icons();
 	pump_cinfo();
 	pump_bg(now);
+	home_bg_pump(now);
 	if (cov.state == 1 && (S.ov == OV_SET || S.ov == OV_CONFIRM)) {   /* live progress */
 		static int shown = -1;
 		if (shown != cov.done) { shown = cov.done; S.dirty = 1; }
