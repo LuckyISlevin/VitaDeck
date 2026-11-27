@@ -40,11 +40,16 @@ function M([datetime]$t) { [int](($t.Date - [datetime]'1970-01-01').Days * 1440 
 $now = Get-Date
 $st = @(
   "#bright 70",
-  "PCSG90106 0 $(M $now.AddMinutes(-35)) 0",
+  "#theme 0",
+  "#sound 1",
+  "#coll 0 Abenteuer",   # a collection (5th column of the app lines: bit 0 = this one)
+  "PCSG90106 0 $(M $now.AddMinutes(-35)) 0 1",
   "PCSB90101 1 $(M $now.AddDays(-1).Date.AddHours(21).AddMinutes(40)) 0",
   "VDDEMO101 0 $(M $now.AddHours(-3)) 0",
-  "PCSE90105 0 $(M $now.AddDays(-3)) 0",
-  "PCSF90104 1 0 0"
+  "PCSE90105 0 $(M $now.AddDays(-3)) 0 1",
+  "PCSF90104 1 0 0",
+  "PCSB90103 0 0 0 1",
+  "PCSE90102 0 0 0 1"
 ) -join "`n"
 New-Item -ItemType Directory -Force "$v\ux0\data\VitaDeck" | Out-Null
 [IO.File]::WriteAllText("$v\ux0\data\VitaDeck\state.txt", $st + "`n", (New-Object Text.UTF8Encoding($false)))

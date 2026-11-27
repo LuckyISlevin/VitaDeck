@@ -14,12 +14,12 @@ Fonts: Lato (UI) and Lexend (wordmark), both under the SIL Open Font License (`r
 ## Screenshots
 | | |
 |---|---|
-| ![Home screen with box art](docs/screenshots/startseite.png) | ![Home screen, Vita games row](docs/screenshots/startseite-reihen.png) |
-| Home: box art in the hero, blurred background from the cover, **playtime** | Portrait box art tiles, rows by category |
+| ![Home screen with box art](docs/screenshots/startseite.png) | ![Home screen, collection row](docs/screenshots/startseite-reihen.png) |
+| Home: box art in the hero with a blurred background from the cover, **playtime** | Own **collections** as rows (here "Abenteuer"), portrait box art tiles |
 | ![Library](docs/screenshots/bibliothek.png) | ![App options](docs/screenshots/optionen.png) |
-| Library sorted by **playtime**; apps without a cover show their icon | Options (△): favourite, hide |
+| Library sorted by **playtime**; apps without a cover show their icon | Options (△): version and size, favourite, hide, collections, clocks |
 | ![Settings](docs/screenshots/einstellungen.png) | ![Quick access](docs/screenshots/schnellzugriff.png) |
-| Settings: return plugin, **cover download** and **colour scheme** | Quick access (SELECT) |
+| Settings: return modes, plugin, **cover download**, **colour scheme** | Quick access (SELECT): brightness, volume, **navigation sounds**, free space |
 
 ![Colour schemes Glut, Aurora, Amethyst and OLED](docs/screenshots/farbschemas.png)
 <sub>Colour schemes besides the default "Nacht": Glut, Aurora, Amethyst and OLED.</sub>
