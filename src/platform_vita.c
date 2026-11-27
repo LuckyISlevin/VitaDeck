@@ -14,6 +14,11 @@
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/sysmem.h>
 #include <psp2/kernel/cpu.h>
+#include <psp2/sysmodule.h>
+#include <psp2/net/net.h>
+#include <psp2/net/netctl.h>
+#include <curl/curl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -264,7 +269,7 @@ static void job_init(void)
 	/* lowest user priority (valid absolute range is 64..191; 0x10000100 is the
 	   special "default" value and cannot be offset – 0x10000120 was rejected
 	   with SCE_KERNEL_ERROR_ILLEGAL_PRIORITY and jobs silently ran inline) */
-	SceUID th = sceKernelCreateThread("vl_job", job_thread, 191, 0x10000, 0,
+	SceUID th = sceKernelCreateThread("vl_job", job_thread, 191, 0x40000, 0,   /* 256 KB: TLS handshakes in mbedTLS need stack */
 	                                  SCE_KERNEL_CPU_MASK_USER_2, NULL);
 	if (th < 0 || sceKernelStartThread(th, 0, NULL) < 0) job_sema = -1;   /* fall back to inline */
 }
@@ -431,6 +436,134 @@ int plat_plugin_cfg_save(int autostart, int ret)
 	char b[48];
 	int n = snprintf(b, sizeof b, "autostart=%d\nreturn=%d\n", autostart ? 1 : 0, ret ? 1 : 0);
 	return plat_write_file(PLUG_CFG, b, n);
+}
+
+/* ---------- network probe (cover download, step 1) ---------- */
+#define NET_LOG  "ux0:data/VitaDeck/net.log"
+#define NET_TEST_URL "https://raw.githubusercontent.com/andiweli/hexflow-covers/main/Covers/PSVita/PCSB00321.png"
+
+static void net_log(const char *fmt, ...)
+{
+	char b[320];
+	unsigned ms = (unsigned)(sceKernelGetProcessTimeWide() / 1000);
+	int n = snprintf(b, sizeof b, "[%5u.%03u] ", ms / 1000, ms % 1000);
+	va_list ap;
+	va_start(ap, fmt);
+	n += vsnprintf(b + n, sizeof b - n - 1, fmt, ap);
+	va_end(ap);
+	if (n > (int)sizeof b - 2) n = sizeof b - 2;
+	b[n++] = '\n';
+	sceIoMkdir("ux0:data/VitaDeck", 0777);
+	SceUID fd = sceIoOpen(NET_LOG, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0666);
+	if (fd < 0) return;
+	sceIoWrite(fd, b, n);
+	sceIoClose(fd);
+}
+
+/* The Vita's own SSL library (FW 3.65) cannot complete a TLS handshake with
+   raw.githubusercontent.com – it fails with and without certificate checks
+   (SceHttp 0x80431075 / SceSsl 0x80435061, tested on hardware). So downloads
+   use libcurl with mbedTLS and the Mozilla CA bundle shipped in the VPK. */
+#define NET_CA_BUNDLE "app0:res/cacert.pem"
+
+typedef struct { int total; unsigned char head[8]; } NetSink;
+
+static size_t net_sink(void *ptr, size_t size, size_t nmemb, void *ud)
+{
+	NetSink *s = ud;
+	size_t n = size * nmemb;
+	if (s->total < 8) {
+		size_t k = 8 - s->total < n ? 8 - s->total : n;
+		memcpy(s->head + s->total, ptr, k);
+	}
+	s->total += (int)n;
+	return s->total > 4 * 1024 * 1024 ? 0 : n;   /* abort anything absurdly large */
+}
+
+/* one GET of NET_TEST_URL; returns the CURLcode, fills HTTP status / bytes / PNG check */
+static int net_get_once(int verify, long *status, int *bytes, int *is_png)
+{
+	*status = 0; *bytes = 0; *is_png = 0;
+	CURL *c = curl_easy_init();
+	if (!c) { net_log("  curl_easy_init failed"); return -1; }
+	char err[CURL_ERROR_SIZE] = { 0 };
+	NetSink sink = { 0 };
+	curl_easy_setopt(c, CURLOPT_URL, NET_TEST_URL);
+	curl_easy_setopt(c, CURLOPT_USERAGENT, "VitaDeck/0.3");
+	curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+	curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+	curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
+	curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
+	curl_easy_setopt(c, CURLOPT_ERRORBUFFER, err);
+	curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, net_sink);
+	curl_easy_setopt(c, CURLOPT_WRITEDATA, &sink);
+	curl_easy_setopt(c, CURLOPT_CAINFO, NET_CA_BUNDLE);
+	curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, verify ? 1L : 0L);
+	curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, verify ? 2L : 0L);
+	uint64_t t0 = sceKernelGetProcessTimeWide();
+	CURLcode res = curl_easy_perform(c);
+	unsigned ms = (unsigned)((sceKernelGetProcessTimeWide() - t0) / 1000);
+	curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, status);
+	char *ip = NULL;
+	curl_easy_getinfo(c, CURLINFO_PRIMARY_IP, &ip);
+	net_log("  curl_easy_perform: %d (%s) in %u ms, server %s", (int)res,
+	        err[0] ? err : curl_easy_strerror(res), ms, ip && ip[0] ? ip : "-");
+	*bytes = sink.total;
+	*is_png = sink.total >= 8 && !memcmp(sink.head, "\x89PNG\r\n\x1a\n", 8);
+	net_log("  HTTP %ld, received %d bytes, PNG signature: %s", *status, sink.total, *is_png ? "yes" : "no");
+	curl_easy_cleanup(c);
+	return (int)res;
+}
+
+int plat_net_test(char *sum, int n)
+{
+	sceIoRemove(NET_LOG);
+	net_log("VitaDeck network test (libcurl), URL %s", NET_TEST_URL);
+	net_log("LoadModule NET: 0x%08X", (unsigned)sceSysmoduleLoadModule(SCE_SYSMODULE_NET));
+
+	static char netmem[1024 * 1024];
+	SceNetInitParam p = { netmem, sizeof netmem, 0 };
+	int r = sceNetInit(&p);
+	net_log("sceNetInit: 0x%08X", (unsigned)r);   /* 0x80410110 = already initialised, fine */
+	int ctl = sceNetCtlInit();
+	net_log("sceNetCtlInit: 0x%08X", (unsigned)ctl);
+	int state = -1;
+	r = sceNetCtlInetGetState(&state);
+	net_log("InetGetState: r=0x%08X state=%d (3 = connected)", (unsigned)r, state);
+	int ok = -1;
+	if (state != SCE_NETCTL_STATE_CONNECTED) {
+		snprintf(sum, n, "Kein WLAN verbunden (Status %d)", state);
+		goto out;
+	}
+	SceNetCtlInfo info;
+	memset(&info, 0, sizeof info);
+	if (sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info) >= 0) net_log("IP address: %s", info.ip_address);
+	net_log("CA bundle %s: %s", NET_CA_BUNDLE, file_exists(NET_CA_BUNDLE) ? "present" : "MISSING");
+
+	CURLcode g = curl_global_init(CURL_GLOBAL_DEFAULT);
+	net_log("curl_global_init: %d, %s", (int)g, curl_version());
+
+	long status; int bytes, png;
+	net_log("Attempt 1: certificate verification ON (Mozilla CA bundle)");
+	int res = net_get_once(1, &status, &bytes, &png);
+	if (res == CURLE_OK && status == 200 && png) {
+		snprintf(sum, n, "OK mit Zertifikatsprüfung · HTTP 200 · %d KB", (bytes + 512) / 1024);
+		ok = 0;
+	} else {
+		int res1 = res; long st1 = status;
+		net_log("Attempt 2: certificate verification OFF (diagnosis only)");
+		res = net_get_once(0, &status, &bytes, &png);
+		if (res == CURLE_OK && status == 200 && png)
+			snprintf(sum, n, "Nur ohne Prüfung OK (mit: curl %d) · %d KB", res1, (bytes + 512) / 1024);
+		else
+			snprintf(sum, n, "Fehlgeschlagen: curl %d / ohne Prüfung curl %d (HTTP %ld/%ld)", res1, res, st1, status);
+	}
+	curl_global_cleanup();
+out:
+	net_log("Result: %s", sum);
+	if (ctl >= 0) sceNetCtlTerm();
+	sceNetTerm();
+	return ok;
 }
 
 int plat_set_brightness(int pct)

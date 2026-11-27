@@ -26,3 +26,7 @@ Third-party components (see their own licenses):
 - res/SpaceGrotesk-*.ttf – SIL Open Font License 1.1 (res/OFL-SpaceGrotesk.txt)
 - src/stb_image.h, src/stb_truetype.h, host/stb_image_write.h – Sean Barrett,
   public domain or MIT (license text at the end of each file)
+- res/cacert.pem – Mozilla CA certificate bundle as published by the curl project
+  (https://curl.se/docs/caextract.html), Mozilla Public License 2.0
+- Linked into the VPK at build time (not in this repository): libcurl (curl license),
+  mbedTLS (Apache-2.0), zlib (zlib license), zstd (BSD) – from the VitaSDK packages

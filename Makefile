@@ -11,10 +11,13 @@ CC       := arm-none-eabi-gcc
 ARCH     := -march=armv7-a+simd -mtune=cortex-a9 -mthumb -mfloat-abi=hard
 CFLAGS   := $(ARCH) -O2 -ffunction-sections -fdata-sections -Wall -Wno-unused-function -I$(HEADERS) -Isrc
 LDFLAGS  := $(ARCH) -nostartfiles -Wl,-q -Wl,--gc-sections -T vita.ld -L$(STUBS)
-LIBS     := -lc -lm -lgcc \
+# curl/mbedTLS/zlib/zstd/pthread: static libs from the VitaSDK packages (must be in $(STUBS) or on -L)
+LIBS     := -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -leverest -lp256m -lz -lzstd -lz -lpthread \
+            -lc -lm -lgcc \
             -lSceDisplay_stub -lSceSysmem_stub -lSceCtrl_stub -lSceTouch_stub -lSceRtc_stub \
             -lScePower_stub -lSceAppMgr_stub -lSceAVConfig_stub -lSceIofilemgr_stub \
-            -lSceLibKernel_stub -lSceKernelThreadMgr_stub -lSceProcessmgr_stub
+            -lSceLibKernel_stub -lSceKernelThreadMgr_stub -lSceKernelModulemgr_stub -lSceProcessmgr_stub \
+            -lSceSysmodule_stub -lSceNet_stub -lSceNetCtl_stub
 
 OBJS := build/crt.o build/gfx.o build/img.o build/ui.o build/platform_vita.o
 
@@ -47,7 +50,8 @@ build/VitaDeck.vpk: build/eboot.bin build/param.sfo sce_sys/icon0.png
 	  -a res/SpaceGrotesk-Regular.ttf=res/SpaceGrotesk-Regular.ttf \
 	  -a res/SpaceGrotesk-Bold.ttf=res/SpaceGrotesk-Bold.ttf \
 	  -a res/OFL-Lato.txt=res/OFL-Lato.txt \
-	  -a res/OFL-SpaceGrotesk.txt=res/OFL-SpaceGrotesk.txt $@
+	  -a res/OFL-SpaceGrotesk.txt=res/OFL-SpaceGrotesk.txt \
+	  -a res/cacert.pem=res/cacert.pem $@
 
 host:
 	gcc -O2 -Wall -Wno-unused-function -Isrc -Ihost src/ui.c src/gfx.c src/img.c host/platform_host.c -lm -o build/host

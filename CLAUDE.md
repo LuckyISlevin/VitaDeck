@@ -18,6 +18,8 @@ Personal/local setup goes into `CLAUDE.local.md` (git-ignored).
 - PowerShell 5.1 mangles double quotes in `git commit -m` – use `git commit -F <file>` for messages with quotes
 - Vita3K reports `sceAppMgrLaunchAppByUri` as success (not implemented), cannot set brightness, does not load SceShell plugins; keys follow US positions (□ = Y on QWERTZ)
 - Built as "unsafe" homebrew (needs access to `ux0:app`, `ur0:appmeta`, `ur0:tai`)
+- **HTTPS:** the Vita's own SceHttp/SceSsl (FW 3.65) cannot complete a TLS handshake with GitHub (0x80431075 / 0x80435061, with and without certificate checks). Downloads use **libcurl + mbedTLS** (VitaSDK packages `curl-mbedtls`, `mbedtls`, `zlib`, `zstd`, extracted into `$VITASDK/arm-vita-eabi`; link also needs `pthread`) with the Mozilla CA bundle `res/cacert.pem` (packed as `app0:res/cacert.pem`, verification on). Verified on hardware: cover from raw.githubusercontent.com in ~350 ms. The job thread has a 256 KB stack for the TLS handshake. VPK grew to ~1.3 MB.
+- Cover source (planned): HexFlow-Covers (`raw.githubusercontent.com/andiweli/hexflow-covers/main/Covers/PSVita/<TITLEID>.png`, 250×320, CC BY-NC-SA 4.0, artwork © publishers) – download on the device only, never bundle covers in the repo/VPK, credit the source
 
 ## Layout
 - `src/ui.c` – the whole UI: home, library, main menu (START), quick access (SELECT), options (△), settings, touch hit testing, logo (concept 3E) and wordmark

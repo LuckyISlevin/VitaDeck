@@ -53,7 +53,12 @@ int plat_plugin_state(char *cfg_path, int n);   /* which config.txt taiHEN uses 
 int plat_plugin_install(void);                  /* 0 ok, <0 error */
 int plat_plugin_uninstall(void);
 void plat_plugin_cfg_load(int *autostart, int *ret);
-int plat_plugin_cfg_save(int autostart, int ret);   /* <0 = SCE error code; on success the Vita process exits */
+int plat_plugin_cfg_save(int autostart, int ret);
+
+/* network probe (cover download, step 1): downloads one cover over HTTPS,
+   logs every step to ux0:data/VitaDeck/net.log and writes a one-line
+   summary. Blocking – run it via plat_job. Returns 0 if the download worked. */
+int plat_net_test(char *summary, int n);   /* <0 = SCE error code; on success the Vita process exits */
 int plat_set_brightness(int pct);
 int plat_get_volume(void);      /* 0..30, <0 = unavailable */
 int plat_set_volume(int v);

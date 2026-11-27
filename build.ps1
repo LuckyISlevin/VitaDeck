@@ -26,9 +26,13 @@ $Sources = 'gfx', 'img', 'ui', 'platform_vita'
 # -ffunction/-fdata-sections + --gc-sections: smaller ELF, and works around a crash of the
 # Windows vita-elf-create (0xC0000374, no message) that showed up once ui.c grew (Schritt 4).
 $CFlags  = '-O2', '-std=gnu99', '-Wall', '-Wno-unused-function', '-ffunction-sections', '-fdata-sections', "-I$Root\src"
-$Libs    = 'SceDisplay_stub', 'SceCtrl_stub', 'SceTouch_stub', 'SceRtc_stub', 'ScePower_stub',
+# libcurl + mbedTLS (VitaSDK packages curl-mbedtls, mbedtls, zlib, zstd) for HTTPS cover downloads –
+# the Vita's own SSL library cannot talk to GitHub. Static libs first, system stubs after.
+$Libs    = 'curl', 'mbedtls', 'mbedx509', 'mbedcrypto', 'everest', 'p256m', 'z', 'zstd', 'z', 'pthread',
+           'SceDisplay_stub', 'SceCtrl_stub', 'SceTouch_stub', 'SceRtc_stub', 'ScePower_stub',
            'SceAppMgr_stub', 'SceAVConfig_stub', 'SceSysmem_stub', 'SceIofilemgr_stub',
-           'SceLibKernel_stub', 'SceKernelThreadMgr_stub', 'SceProcessmgr_stub', 'm'
+           'SceLibKernel_stub', 'SceKernelThreadMgr_stub', 'SceKernelModulemgr_stub', 'SceProcessmgr_stub',
+           'SceSysmodule_stub', 'SceNet_stub', 'SceNetCtl_stub', 'm'
 
 $objs = @()
 foreach ($s in $Sources) {
@@ -68,7 +72,8 @@ $files = 'sce_sys/icon0.png',
          'sce_sys/livearea/contents/template.xml',
          'res/Lato-Regular.ttf', 'res/Lato-Bold.ttf',
          'res/SpaceGrotesk-Regular.ttf', 'res/SpaceGrotesk-Bold.ttf',
-         'res/OFL-Lato.txt', 'res/OFL-SpaceGrotesk.txt'
+         'res/OFL-Lato.txt', 'res/OFL-SpaceGrotesk.txt',
+         'res/cacert.pem'   # Mozilla CA bundle (curl.se, MPL-2.0) for certificate checks
 $packArgs = @('-s', "$Out\param.sfo", '-b', "$Out\eboot.bin")
 foreach ($f in $files) { $packArgs += @('-a', "$Root\$($f -replace '/', '\')=$f") }
 $packArgs += @('-a', "$Out\vdreturn.suprx=plugin/vdreturn.suprx")   # app0:plugin/ – installed from Settings

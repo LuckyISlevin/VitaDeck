@@ -73,6 +73,7 @@ int plat_plugin_install(void) { host_plug = PLUG_INSTALLED; return 0; }
 int plat_plugin_uninstall(void) { host_plug = PLUG_NONE; return 0; }
 void plat_plugin_cfg_load(int *a, int *r) { *a = host_as; *r = host_ret; }
 int plat_plugin_cfg_save(int a, int r) { host_as = a; host_ret = r; return 0; }
+int plat_net_test(char *s, int n) { snprintf(s, n, "not available on the host build"); return -1; }
 int plat_launch(const char *id) { printf("launch %s\n", id); return 0; }
 int plat_set_brightness(int p) { (void)p; return 0; }
 int plat_get_volume(void) { return 18; }

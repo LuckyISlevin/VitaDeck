@@ -81,7 +81,7 @@ static struct {
 	int mi, qi, ci, ctx_app;
 	int launch_app, launch_frames, launch_prev_last;
 	int bright, vol, vol_ok, bright_ok;
-	char toast[96];
+	char toast[128];
 	uint64_t toast_until;
 	int dirty;
 	float sy, sx[5], ly;  /* animated scroll */
@@ -976,8 +976,20 @@ static void draw_menu(void)
 
 /* ---------- settings (return/autostart plugin) ---------- */
 enum { CF_INSTALL = 1, CF_UNINSTALL };
-#define NSET 3
+#define NSET 4
 #define SET_W 440
+
+/* network probe (cover download, step 1) – runs on the job thread */
+static volatile int net_state;   /* 0 idle, 1 running, 2 finished (toast pending), 3 shown */
+static char net_sum[128];
+
+static void net_job(void *arg)
+{
+	(void)arg;
+	plat_net_test(net_sum, sizeof net_sum);
+	__sync_synchronize();
+	net_state = 2;
+}
 
 static void settings_open(void)
 {
@@ -1003,31 +1015,40 @@ static void draw_set(void)
 	text(FONT_BOLD, FS(15), 52, 21, "Einstellungen", rgb(C_TXT), 255);
 	gfx_rect(20, 60, SET_W - 40, 1, rgb(C_LINE2), 255);
 
-	static const char *lbl[NSET] = { "Nach Spielende zurück", "Beim Start öffnen", "Rückkehr-Plugin" };
+	static const char *lbl[NSET] = { "Nach Spielende zurück", "Beim Start öffnen", "Rückkehr-Plugin", "Netzwerk-Test" };
 	static const char *sub[NSET] = { "Öffnet VitaDeck wieder, wenn das Spiel endet",
-	                                 "VitaDeck startet nach dem Einschalten der Vita", NULL };
-	int y = 74;
+	                                 "VitaDeck startet nach dem Einschalten der Vita", NULL, NULL };
+	int y = 70;
 	for (int i = 0; i < NSET; i++) {
-		int on = i == S.si, h = 70;
+		int on = i == S.si, h = 64;
 		gfx_rrect(16, y, SET_W - 32, h, 10, rgb(C_CARD), 255);
 		if (on) { gfx_rrect(14, y - 2, SET_W - 28, h + 4, 12, rgb(C_ACC), 255); gfx_rrect(16, y, SET_W - 32, h, 10, rgb(C_CARD), 255); }
-		text(FONT_BOLD, FS(14), 30, y + 12, lbl[i], rgb(C_TXT), 255);
+		text(FONT_BOLD, FS(14), 30, y + 10, lbl[i], rgb(C_TXT), 255);
 		if (i < 2) {
-			text_fit(FONT_REG, FS(11), 30, y + 40, SET_W - 130, sub[i], rgb(C_MUTE), 255);
-			toggle_sw(SET_W - 76, y + 23, i == 0 ? S.set_ret : S.set_as);
+			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 130, sub[i], rgb(C_MUTE), 255);
+			toggle_sw(SET_W - 76, y + 20, i == 0 ? S.set_ret : S.set_as);
+		} else if (i == 3) {
+			const char *st = net_state == 1 ? "läuft …" : net_state >= 2 ? net_sum
+			                                : "Lädt ein Cover von GitHub, Details in net.log";
+			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 170, st,
+			         rgb(net_state >= 2 && !strncmp(net_sum, "OK", 2) ? C_GREEN : C_MUTE), 255);
+			const char *act = net_state == 1 ? "…" : "Starten";
+			int aw = text_w(FONT_BOLD, FS(13), act) + 28;
+			gfx_rrect(SET_W - 32 - aw, y + 16, aw, 32, 8, rgb(C_BTN), 255);
+			text(FONT_BOLD, FS(13), SET_W - 32 - aw + 14, y + 23, act, rgb(C_TXT), 255);
 		} else {
 			const char *st = S.plug == PLUG_INSTALLED ? "installiert" :
 			                 S.plug == PLUG_OTHER_PATH ? "eingetragen (anderer Pfad)" : "nicht installiert";
 			char b[96];
 			snprintf(b, sizeof b, "Status: %s", st);
-			text_fit(FONT_REG, FS(11), 30, y + 40, SET_W - 170, b, rgb(S.plug == PLUG_INSTALLED ? C_GREEN : C_MUTE), 255);
+			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 170, b, rgb(S.plug == PLUG_INSTALLED ? C_GREEN : C_MUTE), 255);
 			const char *act = S.plug == PLUG_INSTALLED ? "Entfernen" : "Installieren";
 			int aw = text_w(FONT_BOLD, FS(13), act) + 28;
-			gfx_rrect(SET_W - 32 - aw, y + 19, aw, 32, 8, rgb(S.plug == PLUG_INSTALLED ? C_BTN : C_ACC), 255);
-			text(FONT_BOLD, FS(13), SET_W - 32 - aw + 14, y + 26, act, rgb(S.plug == PLUG_INSTALLED ? C_TXT : C_INK), 255);
+			gfx_rrect(SET_W - 32 - aw, y + 16, aw, 32, 8, rgb(S.plug == PLUG_INSTALLED ? C_BTN : C_ACC), 255);
+			text(FONT_BOLD, FS(13), SET_W - 32 - aw + 14, y + 23, act, rgb(S.plug == PLUG_INSTALLED ? C_TXT : C_INK), 255);
 		}
 		hit(16, y, SET_W - 32, h, H_SET, i, 0);
-		y += h + 12;
+		y += h + 10;
 	}
 	/* the switches only do something once the plugin is loaded */
 	const char *note = S.plug == PLUG_NONE ? "Die Schalter wirken erst mit installiertem Plugin."
@@ -1038,7 +1059,7 @@ static void draw_set(void)
 	char b[64];
 	snprintf(b, sizeof b, "Konfiguration: %s", S.plug_cfg);
 	text(FONT_REG, FS(11), 22, y + 66, b, rgb(C_DIM), 255);
-	Hint hs[] = { { G_X, S.si == 2 ? "Ausführen" : "Umschalten" }, { G_O, "Zurück" } };
+	Hint hs[] = { { G_X, S.si >= 2 ? "Ausführen" : "Umschalten" }, { G_O, "Zurück" } };
 	footer(NULL, hs, 2);
 }
 
@@ -1069,6 +1090,10 @@ static void settings_act(int i)
 	if (i == 0 || i == 1) {
 		if (i == 0) S.set_ret = !S.set_ret; else S.set_as = !S.set_as;
 		if (plat_plugin_cfg_save(S.set_as, S.set_ret) < 0) toast("Einstellung konnte nicht gespeichert werden");
+	} else if (i == 3) {
+		if (net_state == 1) return;
+		net_state = 1;
+		if (plat_job(net_job, NULL) < 0) { net_state = 0; toast("Lader ist beschäftigt, bitte gleich nochmal"); }
 	} else {
 		S.confirm = S.plug == PLUG_INSTALLED ? CF_UNINSTALL : CF_INSTALL;
 		S.ov = OV_CONFIRM;
@@ -1608,6 +1633,12 @@ int ui_frame(const Input *in, u32 *buf)
 
 	pump_icons();
 	pump_bg(now);
+	if (net_state == 2) {   /* network probe finished on the job thread */
+		__sync_synchronize();
+		net_state = 3;
+		toast(net_sum);
+		S.dirty = 1;
+	}
 
 	if (!S.dirty) return 0;
 	S.dirty = 0;

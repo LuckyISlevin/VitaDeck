@@ -18,9 +18,11 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -Wall -Wno-unused-function")
 
 add_executable(launcher src/gfx.c src/img.c src/ui.c src/platform_vita.c)
 target_link_libraries(launcher
+  curl mbedtls mbedx509 mbedcrypto everest p256m z zstd z pthread
   m SceDisplay_stub SceCtrl_stub SceTouch_stub SceRtc_stub ScePower_stub
   SceAppMgr_stub SceAVConfig_stub SceSysmem_stub SceIofilemgr_stub
-  SceLibKernel_stub SceKernelThreadMgr_stub SceProcessmgr_stub)
+  SceLibKernel_stub SceKernelThreadMgr_stub SceProcessmgr_stub
+  SceSysmodule_stub SceNet_stub SceNetCtl_stub SceKernelModulemgr_stub)
 
 vita_create_self(eboot.bin launcher UNSAFE)
 vita_create_vpk(VitaDeck.vpk ${VITA_TITLEID} eboot.bin
@@ -35,4 +37,5 @@ vita_create_vpk(VitaDeck.vpk ${VITA_TITLEID} eboot.bin
        res/SpaceGrotesk-Regular.ttf res/SpaceGrotesk-Regular.ttf
        res/SpaceGrotesk-Bold.ttf res/SpaceGrotesk-Bold.ttf
        res/OFL-Lato.txt res/OFL-Lato.txt
-       res/OFL-SpaceGrotesk.txt res/OFL-SpaceGrotesk.txt)
+       res/OFL-SpaceGrotesk.txt res/OFL-SpaceGrotesk.txt
+       res/cacert.pem res/cacert.pem)
