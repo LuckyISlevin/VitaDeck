@@ -8,6 +8,7 @@
 #include <psp2/power.h>
 #include <psp2/appmgr.h>
 #include <psp2/avconfig.h>
+#include <psp2/audioout.h>
 #include <psp2/registrymgr.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/io/dirent.h>
@@ -26,6 +27,7 @@
 #include <string.h>
 #include <strings.h>
 #include <ctype.h>
+#include <math.h>
 
 #define SELF_ID "VLAUNCH01"
 
@@ -729,7 +731,7 @@ int plat_net_begin(char *err, int n)
 	net_log("curl_global_init: %d, %s", (int)g, curl_version());
 	net_curl = curl_easy_init();
 	if (!net_curl) { snprintf(err, n, "curl konnte nicht starten"); plat_net_end(); return -1; }
-	curl_easy_setopt(net_curl, CURLOPT_USERAGENT, "VitaDeck/0.10 (+https://github.com/LuckyISlevin/VitaDeck)");
+	curl_easy_setopt(net_curl, CURLOPT_USERAGENT, "VitaDeck/0.11 (+https://github.com/LuckyISlevin/VitaDeck)");
 	curl_easy_setopt(net_curl, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(net_curl, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(net_curl, CURLOPT_CONNECTTIMEOUT, 10L);
@@ -871,6 +873,72 @@ int plat_get_volume(void)
 }
 
 int plat_set_volume(int v) { return sceAVConfigSetSystemVol(v); }
+/* ---------- navigation sounds (ROADMAP 11) ----------
+   Generated, no sample files: short sine tones with a soft attack and an
+   exponential decay, mono 48 kHz on the main port. One audio thread renders
+   256-sample blocks while a sound plays and sleeps on a semaphore otherwise.
+   The port volume is moderate; the system volume applies on top. */
+#define SND_RATE 48000
+#define SND_BLOCK 256
+static SceUID snd_sema = -1;
+static int snd_port = -1;
+static volatile int snd_kind = -1, snd_seq;   /* last request; snd_seq bumps on every request */
+
+static void snd_render(int kind, int16_t *out, int pos, int n, int *done)
+{
+	/* kind: 0 move (1.6 kHz tick, 22 ms), 1 ok (660 Hz then 990 Hz, 90 ms), 2 back (523 Hz then 392 Hz, 80 ms) */
+	static const float dur[3] = { 0.022f, 0.090f, 0.080f };
+	static const float amp[3] = { 0.18f, 0.28f, 0.24f };
+	*done = 0;
+	for (int i = 0; i < n; i++) {
+		float t = (pos + i) / (float)SND_RATE;
+		if (t >= dur[kind]) { out[i] = 0; *done = 1; continue; }
+		float f = kind == 0 ? 1600.f : kind == 1 ? (t < 0.04f ? 660.f : 990.f) : (t < 0.035f ? 523.f : 392.f);
+		float env = (t < 0.003f ? t / 0.003f : 1.f) * expf(-t * (kind == 0 ? 160.f : 38.f));
+		out[i] = (int16_t)(sinf(6.2831853f * f * t) * env * amp[kind] * 32767.f);
+	}
+}
+
+static int snd_thread(SceSize args, void *argp)
+{
+	(void)args; (void)argp;
+	static int16_t buf[2][SND_BLOCK];
+	int b = 0;
+	for (;;) {
+		sceKernelWaitSema(snd_sema, 1, NULL);
+		int seq = snd_seq, kind = snd_kind, pos = 0, done = 0;
+		while (!done) {
+			if (snd_seq != seq) { seq = snd_seq; kind = snd_kind; pos = 0; }   /* a new sound cuts the old one */
+			if (kind < 0 || kind > 2) break;
+			snd_render(kind, buf[b], pos, SND_BLOCK, &done);
+			sceAudioOutOutput(snd_port, buf[b]);
+			pos += SND_BLOCK;
+			b ^= 1;
+		}
+		sceAudioOutOutput(snd_port, NULL);   /* drain */
+	}
+	return 0;
+}
+
+void plat_sound(int kind)
+{
+	if (snd_port < 0) {
+		static int tried;
+		if (tried) return;
+		tried = 1;
+		snd_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN, SND_BLOCK, SND_RATE, SCE_AUDIO_OUT_MODE_MONO);
+		if (snd_port < 0) return;
+		int vol[2] = { SCE_AUDIO_OUT_MAX_VOL * 3 / 5, SCE_AUDIO_OUT_MAX_VOL * 3 / 5 };
+		sceAudioOutSetVolume(snd_port, SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH, vol);
+		snd_sema = sceKernelCreateSema("vl_snd", 0, 0, 1, NULL);
+		SceUID th = sceKernelCreateThread("vl_snd", snd_thread, 160, 0x4000, 0, 0, NULL);
+		if (snd_sema < 0 || th < 0 || sceKernelStartThread(th, 0, NULL) < 0) { sceAudioOutReleasePort(snd_port); snd_port = -1; return; }
+	}
+	snd_kind = kind;
+	snd_seq++;
+	sceKernelSignalSema(snd_sema, 1);   /* max count 1: repeated requests while playing just restart the sound */
+}
+
 void plat_standby(void) { scePowerRequestSuspend(); }
 void plat_reboot(void) { scePowerRequestColdReset(); }
 void plat_exit(void) { sceKernelExitProcess(0); }

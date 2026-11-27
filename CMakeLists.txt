@@ -13,7 +13,7 @@ include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 
 set(VITA_APP_NAME "VitaDeck")
 set(VITA_TITLEID  "VLAUNCH01")
-set(VITA_VERSION  "01.90")
+set(VITA_VERSION  "02.00")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -Wall -Wno-unused-function")
 
 add_executable(launcher src/gfx.c src/img.c src/ui.c src/platform_vita.c)
@@ -22,7 +22,7 @@ target_link_libraries(launcher
   m SceDisplay_stub SceCtrl_stub SceTouch_stub SceRtc_stub ScePower_stub
   SceAppMgr_stub SceAVConfig_stub SceSysmem_stub SceIofilemgr_stub
   SceLibKernel_stub SceKernelThreadMgr_stub SceProcessmgr_stub
-  SceSysmodule_stub SceNet_stub SceNetCtl_stub SceKernelModulemgr_stub SceRegistryMgr_stub)
+  SceSysmodule_stub SceNet_stub SceNetCtl_stub SceKernelModulemgr_stub SceRegistryMgr_stub SceAudio_stub)
 
 vita_create_self(eboot.bin launcher UNSAFE)
 vita_create_vpk(VitaDeck.vpk ${VITA_TITLEID} eboot.bin

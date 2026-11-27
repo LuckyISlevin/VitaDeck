@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 
 $TitleName = 'VitaDeck'
 $TitleId   = 'VLAUNCH01'   # do not change, favourites would be lost
-$Version   = '01.90'   # v0.10 (VD_VERSION in src/ui.c)
+$Version   = '02.00'   # v0.11 (VD_VERSION in src/ui.c)
 
 $Sdk = if ($env:VITASDK) { $env:VITASDK } else { 'C:\vitasdk' }
 $Bin = Join-Path $Sdk 'bin'
@@ -32,7 +32,7 @@ $Libs    = 'curl', 'mbedtls', 'mbedx509', 'mbedcrypto', 'everest', 'p256m', 'z',
            'SceDisplay_stub', 'SceCtrl_stub', 'SceTouch_stub', 'SceRtc_stub', 'ScePower_stub',
            'SceAppMgr_stub', 'SceAVConfig_stub', 'SceSysmem_stub', 'SceIofilemgr_stub',
            'SceLibKernel_stub', 'SceKernelThreadMgr_stub', 'SceKernelModulemgr_stub', 'SceProcessmgr_stub',
-           'SceSysmodule_stub', 'SceNet_stub', 'SceNetCtl_stub', 'SceRegistryMgr_stub', 'm'
+           'SceSysmodule_stub', 'SceNet_stub', 'SceNetCtl_stub', 'SceRegistryMgr_stub', 'SceAudio_stub', 'm'
 
 $objs = @()
 foreach ($s in $Sources) {

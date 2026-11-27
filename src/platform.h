@@ -85,6 +85,9 @@ int plat_set_brightness(int pct); /* also stores it as the system setting */
 extern int plat_bright_raw;       /* raw system value last read, <0 = none (diagnostics) */
 int plat_get_volume(void);      /* 0..30, <0 = unavailable */
 int plat_set_volume(int v);
+/* navigation sounds: 0 move, 1 confirm, 2 back – non-blocking, generated tones */
+enum { SND_MOVE = 0, SND_OK = 1, SND_BACK = 2 };
+void plat_sound(int kind);
 void plat_standby(void);
 void plat_reboot(void);
 void plat_exit(void);

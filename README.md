@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-# VitaDeck v0.10
+# VitaDeck v0.11
 
 A console-style home screen launcher for the PS Vita (HENkaku/Ensō or h-encore), inspired by SteamOS – without any third-party branding.
 Plain C with a software renderer. The user interface is in German.
@@ -69,7 +69,7 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
 - Hide apps: △ → "Ausblenden"; hidden apps appear in the library tab "Ausgeblendet" (only shown when not empty) and can be restored there via △ → "Einblenden"
 - Launches via `sceAppMgrLaunchAppByUri("psgm:play?titleid=…")`; the launcher exits while the game runs. If a launch fails, VitaDeck stays open and shows the error code.
 - Main menu: home, library, reload app list, settings, standby, restart, quit launcher
-- Quick access: brightness (kept in sync with the system setting), volume (system-wide via SceAVConfig), battery, free space on ux0:, render-time diagnostics
+- Quick access: brightness (kept in sync with the system setting), volume (system-wide via SceAVConfig), navigation sounds on/off, battery, free space on ux0:, render-time diagnostics
 - Options (△) show the title ID, version (of the installed update, if any) and the size on the memory card
 - **Per-game clocks** with [PSVshell](https://github.com/Electry/PSVshell) installed (kernel plugin, not bundled): options (△) → "Takt" switches between Standard, Schnell (CPU 444 MHz) and Maximal (CPU 500 MHz); VitaDeck writes the PSVshell profile for that game, PSVshell applies it at the next start
 - **Colour schemes** (Settings → "Farbschema", ←/→): Nacht (default), Glut, Aurora, Amethyst, OLED – switches instantly
@@ -85,6 +85,9 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
   appends the minutes to `ux0:data/VitaDeck/playtime.txt`; the hero shows "Gespielt: 12 Std." and the library can sort by it.
   VitaDeck keeps an installed plugin up to date and shows in the settings when a reboot is needed to load the new version.
   > **Note:** installing the plugin edits your taiHEN `config.txt`. VitaDeck asks first, keeps a backup next to it and verifies the result, but as with any plugin: if something goes wrong, boot while holding L and restore `config.txt` from `config.txt.vitadeck.bak` in VitaShell. The plugin is optional – VitaDeck works without it.
+
+## What's new in v0.11
+- **Navigation sounds:** soft generated clicks for moving, confirming and going back; switch in quick access (SELECT)
 
 ## What's new in v0.10
 - **Search** in the library (△ → "Suchen …") with an on-screen keyboard; the list filters while you type

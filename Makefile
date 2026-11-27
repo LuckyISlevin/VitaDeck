@@ -2,7 +2,7 @@
 # Needs: arm-none-eabi-gcc (+newlib), vita-toolchain tools, stub libs from vita-headers.
 TITLE      := VitaDeck
 TITLE_ID   := VLAUNCH01
-VERSION    := 01.90
+VERSION    := 02.00
 
 VT       ?= /opt/vt/bin
 HEADERS  ?= /home/claude/vsrc/vita-headers/include
@@ -17,7 +17,7 @@ LIBS     := -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -leverest -lp256m -lz -lzst
             -lSceDisplay_stub -lSceSysmem_stub -lSceCtrl_stub -lSceTouch_stub -lSceRtc_stub \
             -lScePower_stub -lSceAppMgr_stub -lSceAVConfig_stub -lSceIofilemgr_stub \
             -lSceLibKernel_stub -lSceKernelThreadMgr_stub -lSceKernelModulemgr_stub -lSceProcessmgr_stub \
-            -lSceSysmodule_stub -lSceNet_stub -lSceNetCtl_stub -lSceRegistryMgr_stub
+            -lSceSysmodule_stub -lSceNet_stub -lSceNetCtl_stub -lSceRegistryMgr_stub -lSceAudio_stub
 
 OBJS := build/crt.o build/gfx.o build/img.o build/ui.o build/platform_vita.o
 

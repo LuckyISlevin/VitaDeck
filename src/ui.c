@@ -51,7 +51,7 @@ static int theme_idx;
 #define C_STAR   0xffd166
 
 /* shown in the main menu; keep in sync with APP_VER in build.ps1 / CMakeLists.txt / Makefile */
-#define VD_VERSION "v0.10"
+#define VD_VERSION "v0.11"
 
 /* UI font size: +2 px over the original layout sizes (chip labels <= 10 px stay) */
 #define FS(n) ((n) <= 10 ? (n) : (n) + 2)
@@ -127,6 +127,7 @@ static struct {
 	int mi, qi, ci, ctx_app;
 	int launch_app, launch_frames, launch_prev_last;
 	int bright, vol, vol_ok, bright_ok;
+	int sound;            /* navigation sounds on/off (#sound in state.txt, default on) */
 	char toast[128];
 	uint64_t toast_until;
 	int dirty;
@@ -237,6 +238,8 @@ static void load_state(void)
 			snprintf(colls[fav], sizeof colls[fav], "%s", cname);
 		} else if (sscanf(line, "#bright %d", &fav) == 1) {
 			S.bright = fav;
+		} else if (sscanf(line, "#sound %d", &fav) == 1) {
+			S.sound = fav != 0;
 		} else if (sscanf(line, "#theme %d", &fav) == 1) {
 			theme_idx = fav >= 0 && fav < NTHEMES ? fav : 0;
 		}
@@ -291,7 +294,7 @@ static void save_state(void)
 	int cap = 64 + MAXCOLL * 40 + napps * 60, n = 0;
 	char *s = malloc(cap);
 	if (!s) return;
-	n += snprintf(s + n, cap - n, "#bright %d\n#theme %d\n", S.bright, theme_idx);
+	n += snprintf(s + n, cap - n, "#bright %d\n#theme %d\n#sound %d\n", S.bright, theme_idx, S.sound);
 	for (int c = 0; c < MAXCOLL; c++) if (colls[c][0]) n += snprintf(s + n, cap - n, "#coll %d %s\n", c, colls[c]);
 	for (int i = 0; i < napps; i++)
 		if (apps[i].fav || apps[i].last || apps[i].hidden || apps[i].colmask)
@@ -1875,6 +1878,19 @@ static void draw_qa(void)
 		hit(px + 20, y, 340, 70, H_QA, i, 0);
 		y += 84;
 	}
+	/* navigation sounds: a switch instead of a slider */
+	{
+		int on = S.qi == 2;
+		gfx_rrect(px + 20, y, 340, 50, 10, rgb(C_CARD), 255);
+		if (on) {
+			gfx_rrect(px + 18, y - 2, 344, 54, 12, rgb(C_ACC), 255);
+			gfx_rrect(px + 20, y, 340, 50, 10, rgb(C_CARD), 255);
+		}
+		text(FONT_REG, FS(13), px + 34, y + 15, "Navigationsklänge", rgb(C_TXT2), 255);
+		toggle_sw(px + 302, y + 13, S.sound);
+		hit(px + 20, y, 340, 50, H_QA, 2, 0);
+		y += 64;
+	}
 	/* info card */
 	gfx_rrect(px + 20, y, 340, 134, 10, rgb(C_CARD), 255);
 	int chg = 0, pct = plat_battery(&chg);
@@ -2397,6 +2413,7 @@ static void menu_act(int i)
 
 static void qa_adjust(int d)
 {
+	if (S.qi == 2) { (void)d; S.sound = !S.sound; save_state(); if (S.sound) plat_sound(SND_OK); S.dirty = 1; return; }
 	if (S.qi == 0) {
 		int v = S.bright + d * 10;
 		S.bright = v < 10 ? 10 : v > 100 ? 100 : v;
@@ -2459,6 +2476,15 @@ static void ctx_act(int i)
 	}
 }
 
+/* navigation sounds: moves tick, X confirms, O goes back */
+static void ui_sound(unsigned b)
+{
+	if (!S.sound || S.ov == OV_LAUNCH) return;
+	if (b == B_X || b == B_START) plat_sound(SND_OK);
+	else if (b == B_O) plat_sound(SND_BACK);
+	else if (b & (B_UP | B_DOWN | B_LEFT | B_RIGHT | B_L | B_R | B_TRI | B_SQ | B_SELECT)) plat_sound(SND_MOVE);
+}
+
 static void press(unsigned b)
 {
 	S.dirty = 1;
@@ -2489,8 +2515,8 @@ static void press(unsigned b)
 		return;
 	}
 	if (S.ov == OV_QA) {
-		if (b == B_UP) S.qi = 0;
-		else if (b == B_DOWN) S.qi = 1;
+		if (b == B_UP) S.qi = S.qi > 0 ? S.qi - 1 : 0;
+		else if (b == B_DOWN) S.qi = S.qi < 2 ? S.qi + 1 : 2;
 		else if (b == B_LEFT) qa_adjust(-1);
 		else if (b == B_RIGHT || b == B_X) qa_adjust(1);
 		else if (b == B_O || b == B_SELECT) S.ov = OV_NONE;
@@ -2581,6 +2607,7 @@ static void tap(int x, int y)
 		case H_COLL: coll_act(h->a); return;
 		case H_QA: {
 			S.qi = h->a;
+			if (h->a == 2) { qa_adjust(1); return; }
 			int px = SCR_W - 380 + 34;
 			int pct = (x - px) * 100 / 312;
 			pct = pct < 0 ? 0 : pct > 100 ? 100 : pct;
@@ -2716,6 +2743,7 @@ void ui_init(void)
 	memset(&S, 0, sizeof S);
 	S.view = V_BOOT;
 	S.bright = 70;
+	S.sound = 1;
 	S.bright_ok = 1;
 	int v = plat_get_volume();
 	S.vol_ok = v >= 0;
@@ -2775,8 +2803,8 @@ int ui_frame(const Input *in, u32 *buf)
 	if (in->ly > 64) b |= B_DOWN;
 	for (int i = 0; i < 12; i++) {
 		unsigned m = 1u << i;
-		if ((b & m) && !(prev_btn & m)) { held_since[i] = now; next_rep[i] = now + 320; press(m); }
-		else if ((b & m) && i < 4 && now >= next_rep[i]) { next_rep[i] = now + 90; press(m); }
+		if ((b & m) && !(prev_btn & m)) { held_since[i] = now; next_rep[i] = now + 320; ui_sound(m); press(m); }
+		else if ((b & m) && i < 4 && now >= next_rep[i]) { next_rep[i] = now + 90; ui_sound(m); press(m); }
 	}
 	prev_btn = b;
 

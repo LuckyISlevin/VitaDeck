@@ -1,10 +1,9 @@
 # VitaDeck – Feature ideas
 
-As of 2026-11-27, after v0.10. Sorted by value relative to effort.
-**Done so far: 1–10 and 14.** Next: 11, 12.
+As of 2026-11-27, after v0.11. Sorted by value relative to effort.
+**Done so far: 1–11 and 14.** Next: 12.
 
 ## Larger
-11. **Navigation sounds** – soft click/confirm sounds; VitaDeck has no audio output yet (SceAudio).
 12. **Homebrew browser based on VitaDB** – networking, HTTPS with a bundled TLS library (the firmware certificates are outdated), VPK installation; check the API first. The largest sub-project.
 
 ## Done (selection)
@@ -23,3 +22,4 @@ As of 2026-11-27, after v0.10. Sorted by value relative to effort.
 - 8. Home screen background: the hero app's blurred background, darkened and faded towards the rows, built once the focus rests (250 ms)
 - 9. Custom collections: up to 8 named rows (options → "Sammlungen …"), stored as `#coll i name` + a membership column in state.txt; shown on the home screen after the favourites
 - 10. Library search with an own on-screen keyboard (QWERTZ, umlauts; the system IME needs GXM): options → "Suchen …", filters while typing, O ends it
+- 11. Navigation sounds: generated sine tones (tick / confirm / back) on an own audio thread (SceAudio main port, mono 48 kHz), switch in quick access, `#sound` in state.txt

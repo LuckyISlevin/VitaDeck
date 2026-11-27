@@ -87,6 +87,7 @@ int plat_get_brightness(void) { return -1; }
 int plat_set_brightness(int p) { (void)p; return 0; }
 int plat_get_volume(void) { return 18; }
 int plat_set_volume(int v) { (void)v; return 0; }
+void plat_sound(int kind) { (void)kind; }
 void plat_standby(void) {}
 void plat_reboot(void) {}
 void plat_exit(void) {}
