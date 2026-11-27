@@ -1,6 +1,6 @@
 # VitaDeck – Feature ideas
 
-As of 2026-11-27, after v0.4. Sorted by value relative to effort.
+As of 2026-11-27, after v0.5. Sorted by value relative to effort.
 **Round 1 → 5 → 6 is done.** Candidates for the next round: 2, 3, 4, 13 (airplane mode), 14 (overclocking).
 
 ## Small but noticeable

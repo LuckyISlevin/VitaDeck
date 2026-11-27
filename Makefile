@@ -2,7 +2,7 @@
 # Needs: arm-none-eabi-gcc (+newlib), vita-toolchain tools, stub libs from vita-headers.
 TITLE      := VitaDeck
 TITLE_ID   := VLAUNCH01
-VERSION    := 01.30
+VERSION    := 01.40
 
 VT       ?= /opt/vt/bin
 HEADERS  ?= /home/claude/vsrc/vita-headers/include

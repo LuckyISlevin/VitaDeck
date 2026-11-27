@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-# VitaDeck v0.4
+# VitaDeck v0.5
 
 A console-style home screen launcher for the PS Vita (HENkaku/Ensō or h-encore), inspired by SteamOS – without any third-party branding.
 Plain C with a software renderer. The user interface is in German.
@@ -76,6 +76,11 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
   appends the minutes to `ux0:data/VitaDeck/playtime.txt`; the hero shows "Gespielt: 12 Std." and the library can sort by it.
   VitaDeck keeps an installed plugin up to date and shows in the settings when a reboot is needed to load the new version.
   > **Note:** installing the plugin edits your taiHEN `config.txt`. VitaDeck asks first, keeps a backup next to it and verifies the result, but as with any plugin: if something goes wrong, boot while holding L and restore `config.txt` from `config.txt.vitadeck.bak` in VitaShell. The plugin is optional – VitaDeck works without it.
+
+## What's new in v0.5
+- **Playtime** (with the return plugin, updated automatically): every game is timed, also when started from the LiveArea; shown in the hero and the library, which can sort by it
+- **Swipe scrolling** on the touch screen: rows, row jumps, library grid, tab switch
+- **Brightness** stays in sync with the system setting (PS button menu) and persists system-wide
 
 ## What's new in v0.4
 - Box art: Settings → "Cover laden" downloads covers from HexFlow-Covers over HTTPS (libcurl + mbedTLS, certificates verified)
