@@ -58,7 +58,7 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
 ## Features
 - Reads all apps from `ux0:app` (title from `param.sfo`, icon from `ur0:appmeta/<ID>/icon0.png`)
 - Sorts them into Vita games (title ID `PCSxxxxxx`), homebrew and emulators (by name)
-- Home screen with a large hero area and rows: recently played, favourites, collections, Vita games, PSP games, homebrew, emulators
+- Home screen with a large hero area and rows: recently played, favourites, collections, Vita games, homebrew, emulators
 - **Box art:** portrait cover tiles and a cover in the hero, with a blurred, darkened background made from the cover.
   Settings → "Cover laden" downloads the box art of all installed apps over HTTPS from
   [HexFlow-Covers](https://github.com/andiweli/hexflow-covers) (the database also used by HexFlow and RetroFlow) to
@@ -88,6 +88,7 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
 
 ## What's new in v0.12
 - The blurred home screen background from v0.9 is gone again – browsing quickly through the rows no longer waits for it
+- PSP games are no longer listed – start them from Adrenaline
 
 ## What's new in v0.11
 - **Navigation sounds:** soft generated clicks for moving, confirming and going back; switch in quick access (SELECT)
@@ -97,7 +98,7 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
 - **Collections:** group apps into your own named rows on the home screen (△ → "Sammlungen …")
 
 ## What's new in v0.9
-- **PSP games:** official PSP titles (ux0:pspemu) and Adrenaline bubbles get their own home row "PSP-Spiele" and library tab "PSP"; "Cover laden" also fetches PSP covers
+- **PSP games:** official PSP titles (ux0:pspemu) and Adrenaline bubbles get their own home row "PSP-Spiele" and library tab "PSP" (removed again in v0.12)
 - **Home background:** a darkened, blurred picture of the game in the hero fills the home screen (removed again in v0.12)
 
 ## What's new in v0.8

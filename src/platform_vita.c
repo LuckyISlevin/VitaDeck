@@ -166,83 +166,6 @@ static int classify(const char *id, const char *title)
 	return CAT_HOMEBREW;
 }
 
-/* one section of a PSP EBOOT.PBP (0 = PARAM.SFO, 1 = ICON0.PNG), read without loading the
-   whole file (PSN games are several hundred MB). Returns 0 and a malloc'd buffer. */
-static int pbp_section(const char *path, int idx, unsigned char **out, int *outlen)
-{
-	SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0);
-	if (fd < 0) return -1;
-	unsigned char h[40];
-	int r = -1;
-	if (sceIoRead(fd, h, sizeof h) == (int)sizeof h && !memcmp(h, "\0PBP", 4)) {
-		unsigned off[8];
-		for (int i = 0; i < 8; i++) off[i] = h[8 + i * 4] | h[9 + i * 4] << 8 | h[10 + i * 4] << 16 | (unsigned)h[11 + i * 4] << 24;
-		unsigned a = off[idx], b = off[idx + 1];
-		if (b > a && b - a <= 1024 * 1024 && sceIoLseek(fd, a, SCE_SEEK_SET) == (SceOff)a) {
-			unsigned char *d = malloc(b - a);
-			if (d && sceIoRead(fd, d, b - a) == (int)(b - a)) { *out = d; *outlen = (int)(b - a); r = 0; }
-			else free(d);
-		}
-	}
-	sceIoClose(fd);
-	return r;
-}
-
-/* official PSP games (PSN, installed to ux0:pspemu/PSP/GAME/<ID>): started by the system's
-   own PSP emulator through the same URI as Vita games. Metadata from ur0:appmeta if the
-   bubble has it, else from EBOOT.PBP (icon cached in ux0:data/VitaDeck/pspicons). */
-static int scan_psp(PlatApp **plist, int *pcap, int n)
-{
-	SceUID dfd = sceIoDopen("ux0:pspemu/PSP/GAME");
-	if (dfd < 0) return n;
-	SceIoDirent de;
-	memset(&de, 0, sizeof de);
-	while (sceIoDread(dfd, &de) > 0) {
-		const char *id = de.d_name;
-		int ok = SCE_S_ISDIR(de.d_stat.st_mode) && strlen(id) == 9 && isupper((unsigned char)id[0]);
-		for (int i = 4; ok && i < 9; i++) ok = isdigit((unsigned char)id[i]) != 0;
-		char eboot[128];
-		snprintf(eboot, sizeof eboot, "ux0:pspemu/PSP/GAME/%s/EBOOT.PBP", id);
-		if (!ok || !file_exists(eboot)) { memset(&de, 0, sizeof de); continue; }
-		if (n == *pcap) {
-			PlatApp *nl = realloc(*plist, *pcap * 2 * sizeof(PlatApp));
-			if (!nl) break;
-			*plist = nl; *pcap *= 2;
-		}
-		PlatApp *a = &(*plist)[n];
-		memset(a, 0, sizeof *a);
-		snprintf(a->id, sizeof a->id, "%s", id);
-		snprintf(a->title, sizeof a->title, "%s", id);
-		a->cat = CAT_PSP;
-		char p[128];
-		unsigned char *d = NULL; int len = 0;
-		snprintf(p, sizeof p, "ur0:appmeta/%s/param.sfo", id);
-		if (plat_read_file(p, &d, &len) < 0 && pbp_section(eboot, 0, &d, &len) < 0) d = NULL;
-		if (d) {
-			char t[128];
-			if (sfo_get(d, len, "TITLE", t, sizeof t) == 0 && t[0]) snprintf(a->title, sizeof a->title, "%s", t);
-			if (sfo_get(d, len, "DISC_VERSION", t, sizeof t) == 0 || sfo_get(d, len, "APP_VER", t, sizeof t) == 0)
-				snprintf(a->ver, sizeof a->ver, "%.7s", t);
-			free(d);
-		}
-		for (char *c = a->title; *c; c++) if (*c == '\n' || *c == '\r') *c = ' ';
-		snprintf(p, sizeof p, "ur0:appmeta/%s/icon0.png", id);
-		if (!file_exists(p)) {
-			snprintf(p, sizeof p, "ux0:data/VitaDeck/pspicons/%s.png", id);
-			if (!file_exists(p) && pbp_section(eboot, 1, &d, &len) == 0) {
-				sceIoMkdir("ux0:data/VitaDeck/pspicons", 0777);
-				plat_write_file(p, d, len);
-				free(d);
-			}
-		}
-		snprintf(a->icon_path, sizeof a->icon_path, "%s", p);
-		n++;
-		memset(&de, 0, sizeof de);
-	}
-	sceIoDclose(dfd);
-	return n;
-}
-
 int plat_scan_apps(PlatApp **out)
 {
 	int cap = 64, n = 0;
@@ -286,13 +209,9 @@ int plat_scan_apps(PlatApp **out)
 		if (!file_exists(p)) snprintf(p, sizeof p, "ux0:app/%s/sce_sys/icon0.png", a->id);
 		snprintf(a->icon_path, sizeof a->icon_path, "%s", p);
 		a->cat = classify(a->id, a->title);
-		/* Adrenaline bubbles (Adrenaline Bubble Manager) point at a PSP/PS1 image via data/boot.inf */
-		snprintf(p, sizeof p, "ux0:app/%s/data/boot.inf", a->id);
-		if (file_exists(p)) a->cat = CAT_PSP;
 		n++;
 	}
 	sceIoDclose(dfd);
-	n = scan_psp(&list, &cap, n);
 	*out = list;
 	return n;
 }

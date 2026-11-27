@@ -99,18 +99,17 @@ static char search[48];           /* library search ("" = off), UTF-8 */
 static int napps;
 
 typedef struct { const char *title; int n; int idx[MAXA]; } Row;
-#define MAXROWS (6 + MAXCOLL)   /* recent, favourites, collections, Vita, PSP, homebrew, emulators */
+#define MAXROWS (5 + MAXCOLL)   /* recent, favourites, collections, Vita, homebrew, emulators */
 static Row rows[MAXROWS];
 static int nrows;
 static int lib[MAXA], nlib;
 static int lists_dirty = 1;
 
 /* library tabs: logical ids (index into TABS); S.tab indexes the *visible* list,
-   in which "PSP" only appears with PSP content and "Ausgeblendet" only with hidden apps */
-static const char *TABS[] = { "Alle", "Vita", "Homebrew", "Emulatoren", "Favoriten", "Ausgeblendet", "PSP" };
+   in which "Ausgeblendet" only appears with hidden apps */
+static const char *TABS[] = { "Alle", "Vita", "Homebrew", "Emulatoren", "Favoriten", "Ausgeblendet" };
 #define TAB_FAV    4
 #define TAB_HIDDEN 5
-#define TAB_PSP    6
 static int ntabs(void);
 static int tab_id(int visible);
 static const char *SORTS[] = { "A–Z", "Zuletzt gestartet", "Spielzeit" };
@@ -207,7 +206,7 @@ static void fmt_size(int64_t b, char *out, int n)
 
 static const char *cat_name(int c)
 {
-	return c == CAT_VITA ? "Vita" : c == CAT_EMU ? "Emulator" : c == CAT_PSP ? "PSP" : "Homebrew";
+	return c == CAT_VITA ? "Vita" : c == CAT_EMU ? "Emulator" : "Homebrew";
 }
 
 /* ---------- persistence ---------- */
@@ -346,10 +345,9 @@ static int cmp_play(const void *x, const void *y)
 
 static int tab_list(int out[])
 {
-	int psp = 0, hid = 0, n = 0;
-	for (int i = 0; i < napps; i++) { if (apps[i].hidden) hid = 1; else if (apps[i].cat == CAT_PSP) psp = 1; }
+	int hid = 0, n = 0;
+	for (int i = 0; i < napps; i++) if (apps[i].hidden) hid = 1;
 	out[n++] = 0; out[n++] = 1;
-	if (psp) out[n++] = TAB_PSP;
 	out[n++] = 2; out[n++] = 3; out[n++] = TAB_FAV;
 	if (hid) out[n++] = TAB_HIDDEN;
 	return n;
@@ -365,7 +363,7 @@ static int lib_filter(int tab, int out[])   /* tab = logical id */
 		App *a = &apps[i];
 		int ok = tab == TAB_HIDDEN ? a->hidden :
 		         !a->hidden && (tab == 0 || (tab == 1 && a->cat == CAT_VITA) || (tab == 2 && a->cat == CAT_HOMEBREW) ||
-		                        (tab == 3 && a->cat == CAT_EMU) || (tab == TAB_FAV && a->fav) || (tab == TAB_PSP && a->cat == CAT_PSP));
+		                        (tab == 3 && a->cat == CAT_EMU) || (tab == TAB_FAV && a->fav));
 		if (ok) out[n++] = i;
 	}
 	return n;
@@ -386,9 +384,9 @@ static void rebuild(void)
 		memcpy(r->idx, tmp, r->n * sizeof(int));
 		nrows++;
 	}
-	static const char *ttl[] = { "Favoriten", "Vita-Spiele", "PSP-Spiele", "Homebrew", "Emulatoren" };
-	int tabs[] = { TAB_FAV, 1, TAB_PSP, 2, 3 };
-	for (int k = 0; k < 5 && nrows < MAXROWS; k++) {
+	static const char *ttl[] = { "Favoriten", "Vita-Spiele", "Homebrew", "Emulatoren" };
+	int tabs[] = { TAB_FAV, 1, 2, 3 };
+	for (int k = 0; k < 4 && nrows < MAXROWS; k++) {
 		n = lib_filter(tabs[k], tmp);
 		if (n) {
 			qsort(tmp, n, sizeof(int), cmp_title);
@@ -411,7 +409,7 @@ static void rebuild(void)
 			memcpy(r->idx, tmp, n * sizeof(int));
 		}
 	}
-	if (S.tab >= ntabs()) S.tab = 0;   /* "PSP" / "Ausgeblendet" vanish once empty */
+	if (S.tab >= ntabs()) S.tab = 0;   /* "Ausgeblendet" vanishes once empty */
 	nlib = lib_filter(tab_id(S.tab), lib);
 	if (search[0]) {   /* library search: keep titles containing the text (case-insensitive, umlauts too) */
 		char q[64], t[160];
@@ -492,7 +490,7 @@ static void load_icon(App *a)
 	stbi_image_free(rgba);
 	if (!im) return;
 	if (w != h && w > 0 && h > 0) {
-		/* non-square icons (PSP: 144x80) are fitted, not stretched: centred on a transparent square */
+		/* non-square icons are fitted, not stretched: centred on a transparent square */
 		int nw = w > h ? 128 : 128 * w / h, nh = w > h ? 128 * h / w : 128;
 		Img *s = img_scaled(im, nw, nh);
 		img_free(im);
@@ -787,7 +785,7 @@ static void bg_work(void *arg)
 		} else if (size > 0) {
 			Img *cover = decode_file(path);
 			if (cover) {
-				bgjob.box = scale_fill(cover, TILE, TILE_H);   /* PSP/PS1 covers have other aspects: crop, don't stretch */
+				bgjob.box = scale_fill(cover, TILE, TILE_H);   /* covers of another aspect: crop, don't stretch */
 				bgjob.boxh = scale_fill(cover, HBOX_W, HBOX_H);
 				to_opaque(bgjob.box, rgb(C_CARD));
 				to_opaque(bgjob.boxh, rgb(C_CARD));
@@ -1491,14 +1489,12 @@ enum { CF_INSTALL = 1, CF_UNINSTALL };
    art yet; 404 = no cover in the database. Covers are only stored on the
    device – never bundled with VitaDeck. */
 #define COVER_URL     "https://raw.githubusercontent.com/andiweli/hexflow-covers/main/Covers/PSVita/%s.png"
-#define COVER_URL_PSP "https://raw.githubusercontent.com/andiweli/hexflow-covers/main/Covers/PSP/%s.png"
 
 static struct {
 	volatile int state;        /* 0 idle, 1 running, 2 finished (pending), 3 shown */
 	volatile int done;
 	int total, got, have, missing, failed;
 	char ids[MAXA][16];
-	unsigned char cat[MAXA];   /* app category: PSP covers live in another folder */
 	char msg[128];
 } cov;
 static int cov_have_now;       /* covers on the card when the settings were opened */
@@ -1525,7 +1521,7 @@ static void cover_job(void *arg)
 			snprintf(path, sizeof path, "%s/%s.png", plat_cover_dir(), cov.ids[i]);
 			if (plat_file_exists(path)) cov.have++;
 			else {
-				snprintf(url, sizeof url, cov.cat[i] == CAT_PSP ? COVER_URL_PSP : COVER_URL, cov.ids[i]);
+				snprintf(url, sizeof url, COVER_URL, cov.ids[i]);
 				int r = plat_http_download(url, path);
 				if (r == 0) cov.got++; else if (r == 1) cov.missing++; else cov.failed++;
 			}
@@ -1568,7 +1564,7 @@ static void cover_start(void)
 {
 	if (cov.state == 1) return;
 	cov.total = 0;
-	for (int i = 0; i < napps && cov.total < MAXA; i++) { cov.cat[cov.total] = (unsigned char)apps[i].cat; snprintf(cov.ids[cov.total++], 16, "%s", apps[i].id); }
+	for (int i = 0; i < napps && cov.total < MAXA; i++) snprintf(cov.ids[cov.total++], 16, "%s", apps[i].id);
 	cov.done = cov.got = cov.have = cov.missing = cov.failed = 0;
 	cov.msg[0] = 0;
 	cov.state = 1;

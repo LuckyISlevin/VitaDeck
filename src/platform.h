@@ -15,7 +15,7 @@ typedef struct {
 	int touch, tx, ty;   /* front touch in screen pixels */
 } Input;
 
-enum { CAT_VITA = 1, CAT_HOMEBREW = 2, CAT_EMU = 3, CAT_PSP = 4 };   /* PSP: official PSP games and Adrenaline bubbles */
+enum { CAT_VITA = 1, CAT_HOMEBREW = 2, CAT_EMU = 3 };
 
 typedef struct {
 	char id[16];
