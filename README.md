@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-# VitaDeck v0.7
+# VitaDeck v0.8
 
 A console-style home screen launcher for the PS Vita (HENkaku/Ensō or h-encore), inspired by SteamOS – without any third-party branding.
 Plain C with a software renderer. The user interface is in German.
@@ -84,6 +84,9 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
   appends the minutes to `ux0:data/VitaDeck/playtime.txt`; the hero shows "Gespielt: 12 Std." and the library can sort by it.
   VitaDeck keeps an installed plugin up to date and shows in the settings when a reboot is needed to load the new version.
   > **Note:** installing the plugin edits your taiHEN `config.txt`. VitaDeck asks first, keeps a backup next to it and verifies the result, but as with any plugin: if something goes wrong, boot while holding L and restore `config.txt` from `config.txt.vitadeck.bak` in VitaShell. The plugin is optional – VitaDeck works without it.
+
+## What's new in v0.8
+- **Per-game clocks** via [PSVshell](https://github.com/Electry/PSVshell) (install it yourself): options (△) → "Takt": Standard, Schnell (CPU 444 MHz) or Maximal (CPU 500 MHz), applied when the game starts
 
 ## What's new in v0.7
 - **"Nach Spielende zurück" with three modes:** off, after games started from VitaDeck, or always – also after games and apps started from the LiveArea (VitaDeck as the home screen; return plugin v3)

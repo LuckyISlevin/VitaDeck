@@ -1,6 +1,6 @@
 # VitaDeck – Feature ideas
 
-As of 2026-11-27, after v0.7. Sorted by value relative to effort.
+As of 2026-11-27, after v0.8. Sorted by value relative to effort.
 **Done so far: 1–6 and 14.** Next candidates: 7–12.
 
 ## Medium effort, high value
