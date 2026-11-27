@@ -1,12 +1,9 @@
 # VitaDeck – Feature ideas
 
 As of 2026-11-27, after v0.6. Sorted by value relative to effort.
-**Round 1 → 5 → 6 is done.** Candidates for the next round: 2, 3, 4, 13 (airplane mode), 14 (overclocking).
+**Done so far: 1, 2, 3, 4, 5, 6.** Next candidates: 13 (airplane mode), 14 (overclocking), then 7–12.
 
 ## Small but noticeable
-2. **"Always return to VitaDeck"** as a third switch in the settings – the plugin sees every game, so VitaDeck could also come back after games started from the LiveArea (replacement home screen). New key in `plugin.txt`.
-3. **App details in the options menu (△)** – version (`APP_VER` from `param.sfo`), size on the memory card, title ID.
-4. **Free space on ux0:** in quick access, next to the battery.
 13. **Airplane mode in the main menu (START)** – toggle entry next to standby/restart. *Research first:* which registry key / system call switches airplane mode (and whether the shell picks up the change without a restart).
 
 ## Medium effort, high value
@@ -28,3 +25,6 @@ As of 2026-11-27, after v0.6. Sorted by value relative to effort.
 - 5. Playtime: the plugin (v2) appends "TITLEID seconds" to playtime.txt every minute and at the end of a session; VitaDeck sums and compacts it, shows it in the hero and sorts the library by it
 - 6. Swipe scrolling: home rows (sideways), row jumps (up/down), library grid (up/down), tab switch (sideways); snaps to whole tiles with a fling; rows scroll only when the focus reaches an edge
 - Extra (not on the list): colour schemes (Nacht, Glut, Aurora, Amethyst, OLED) and a Wi-Fi icon in the header
+- 2. "Nach Spielende zurück" has three modes: off, after VitaDeck starts, always (also LiveArea starts; plugin v3, `always=` in plugin.txt)
+- 3. Options menu (△) shows title ID, version (update version if one is installed) and size incl. update
+- 4. Quick access shows free space on ux0:

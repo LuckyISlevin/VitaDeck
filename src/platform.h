@@ -21,6 +21,7 @@ typedef struct {
 	char id[16];
 	char title[128];
 	char icon_path[128];
+	char ver[8];       /* APP_VER from param.sfo, e.g. "01.00" ("" = unknown) */
 	int cat;
 } PlatApp;
 
@@ -45,6 +46,10 @@ const char *plat_cover_dir(void);
 int plat_file_exists(const char *path);
 int plat_file_size(const char *path);   /* bytes, <0 if missing */
 int plat_mkdir(const char *path);
+int plat_storage(uint64_t *free_bytes, uint64_t *total_bytes);   /* ux0:, <0 = unknown */
+/* blocking – call only from a job: bytes of the app, of its update (ux0:patch, 0 = none)
+   and the update's APP_VER ("" = no update) */
+int plat_app_info(const char *id, int64_t *app_bytes, int64_t *patch_bytes, char *patch_ver, int n);
 /* run job(arg) on a background worker (one at a time; host: synchronously).
    Returns 0 if started, <0 if the worker is still busy. */
 int plat_job(void (*job)(void *), void *arg);
@@ -60,6 +65,7 @@ int plat_plugin_update(void);                   /* replace an outdated installed
 int plat_plugin_outdated(void);                 /* installed, but SceShell still runs an older version (reboot) */
 /* "TITLEID seconds" lines appended by the plugin, summed and compacted by ui.c */
 const char *plat_playtime_path(void);
+/* ret = return mode: 0 off, 1 after games started from VitaDeck, 2 always (also LiveArea starts) */
 void plat_plugin_cfg_load(int *autostart, int *ret);
 int plat_plugin_cfg_save(int autostart, int ret);
 

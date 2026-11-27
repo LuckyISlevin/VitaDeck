@@ -68,12 +68,14 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
 - Hide apps: △ → "Ausblenden"; hidden apps appear in the library tab "Ausgeblendet" (only shown when not empty) and can be restored there via △ → "Einblenden"
 - Launches via `sceAppMgrLaunchAppByUri("psgm:play?titleid=…")`; the launcher exits while the game runs. If a launch fails, VitaDeck stays open and shows the error code.
 - Main menu: home, library, reload app list, settings, standby, restart, quit launcher
-- Quick access: brightness (kept in sync with the system setting), volume (system-wide via SceAVConfig), battery, render-time diagnostics
+- Quick access: brightness (kept in sync with the system setting), volume (system-wide via SceAVConfig), battery, free space on ux0:, render-time diagnostics
+- Options (△) show the title ID, version (of the installed update, if any) and the size on the memory card
 - **Colour schemes** (Settings → "Farbschema", ←/→): Nacht (default), Glut, Aurora, Amethyst, OLED – switches instantly
 - Header with Wi-Fi signal (hidden without a connection), battery and clock
 - **Return plugin** (Settings → "Rückkehr-Plugin" → install): a small taiHEN user plugin for the system shell.
-  It starts VitaDeck after boot and reopens it when a game started from VitaDeck is closed
-  (games started from the LiveArea are left alone). Both can be switched off separately; the return switch applies immediately, autostart on the next boot.
+  It starts VitaDeck after boot and reopens it when a game is closed – "Nach Spielende zurück" has three modes:
+  off, only after games started from VitaDeck, or always (also games and apps started from the LiveArea – VitaDeck as the home screen).
+  The return mode applies immediately, autostart on the next boot.
   Installing copies `vdreturn.suprx` to `ur0:tai/` and adds it under `*main` in the config.txt taiHEN uses (backup: `config.txt.vitadeck.bak`).
   Escape hatches: hold SELECT while powering on = no autostart; hold L while powering on = taiHEN loads no plugins at all.
   Log: `ux0:data/VitaDeck/plugin.log`.

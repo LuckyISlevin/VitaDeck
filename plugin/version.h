@@ -3,6 +3,6 @@
    it; VitaDeck compares it with its bundled copy to tell "reboot needed". */
 #ifndef VD_PLUGIN_VERSION_H
 #define VD_PLUGIN_VERSION_H
-#define PLUGIN_VERSION  2          /* 1 = return/autostart, 2 = + playtime */
+#define PLUGIN_VERSION  3          /* 1 = return/autostart, 2 = + playtime, 3 = + always return */
 #define PLUGIN_VER_FILE "ux0:data/VitaDeck/plugin.ver"
 #endif

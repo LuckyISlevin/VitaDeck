@@ -124,12 +124,13 @@ static int read_marker(char *id, int max)
 	return k == 9;   /* title IDs are 9 characters, e.g. PCSB00321 */
 }
 
-/* settings written by VitaDeck (step 4); a missing file or key means "on" */
-typedef struct { int autostart, ret; } Settings;
+/* settings written by VitaDeck (step 4); a missing file or key means "on",
+   except "always" (also return after apps started from the LiveArea): off */
+typedef struct { int autostart, ret, always; } Settings;
 
 static Settings read_settings(void)
 {
-	Settings s = { 1, 1 };
+	Settings s = { 1, 1, 0 };
 	SceUID fd = sceIoOpen(SETTINGS, SCE_O_RDONLY, 0);
 	if (fd < 0) return s;
 	char buf[128];
@@ -140,6 +141,7 @@ static Settings read_settings(void)
 		const char *l = buf + i;
 		if (!sceClibStrncmp(l, "autostart=", 10) && l[10]) s.autostart = l[10] != '0';
 		if (!sceClibStrncmp(l, "return=", 7) && l[7]) s.ret = l[7] != '0';
+		if (!sceClibStrncmp(l, "always=", 7) && l[7]) s.always = l[7] != '0';
 		while (i < n && buf[i] != '\n') i++;
 		i++;
 	}
@@ -218,8 +220,10 @@ static void play_flush(PlaySlot *s)
 }
 
 /* called once per poll with the current snapshot and the time since the last poll */
-static void play_update(const RunApp *cur, int n, unsigned dt)
+/* returns how many timed apps ended in this poll */
+static int play_update(const RunApp *cur, int n, unsigned dt)
 {
+	int ended = 0;
 	if (dt > PLAY_GAP_MS) dt = 0;
 	for (int k = 0; k < PLAY_SLOTS; k++) g_play[k].seen = 0;
 	for (int i = 0; i < n; i++) {
@@ -246,7 +250,9 @@ static void play_update(const RunApp *cur, int n, unsigned dt)
 			play_flush(&g_play[k]);
 			log_line("playtime: %s ended", g_play[k].id);
 			g_play[k].used = 0;
+			ended++;
 		}
+	return ended;
 }
 
 enum { ST_IDLE, ST_WAIT_START, ST_RUNNING, ST_ENDED };
@@ -261,14 +267,16 @@ static int worker(SceSize args, void *argp)
 	int r = sceCtrlPeekBufferPositive(0, &pad, 1);
 	Settings cfg = read_settings();
 	int skip = r > 0 && (pad.buttons & SCE_CTRL_SELECT);
-	log_line("Plugin v%d started. autostart=%d return=%d, buttons at start: 0x%08X%s", PLUGIN_VERSION,
-	         cfg.autostart, cfg.ret, (unsigned)pad.buttons, skip ? " (SELECT: autostart skipped)" : "");
+	log_line("Plugin v%d started. autostart=%d return=%d always=%d, buttons at start: 0x%08X%s", PLUGIN_VERSION,
+	         cfg.autostart, cfg.ret, cfg.always, (unsigned)pad.buttons, skip ? " (SELECT: autostart skipped)" : "");
 
 	RunApp prev[MAX_APPS], cur[MAX_APPS];
 	int nprev = -1;
 	int st = ST_IDLE;
 	char game[16] = { 0 };
 	unsigned t_state = 0;
+	int any_pending = 0;
+	unsigned t_any = 0;
 
 	/* autostart: wait until the boot-time system app has come and gone */
 	int as_pending = cfg.autostart && !skip, as_seen_boot = 0, as_calm_set = 0;
@@ -290,7 +298,12 @@ static int worker(SceSize args, void *argp)
 
 		unsigned t = now_ms();
 		static unsigned t_play;
-		if (n >= 0) play_update(cur, n, t_play ? t - t_play : 0);
+		int ended = n >= 0 ? play_update(cur, n, t_play ? t - t_play : 0) : 0;
+		/* "always return": an app VitaDeck did not start (no marker) has ended */
+		if (ended && st == ST_IDLE) {
+			Settings cs = read_settings();
+			if (cs.ret && cs.always) { any_pending = 1; t_any = t; log_line("An app ended (always return is on)"); }
+		}
 		t_play = t;
 
 		/* autostart (once per boot) */
@@ -353,6 +366,12 @@ static int worker(SceSize args, void *argp)
 			if (other_app_running(game)) log_line("Another app is running, no return");
 			else launch_vitadeck();
 			break;
+		}
+		if (any_pending && st != ST_IDLE) any_pending = 0;   /* a marker took over */
+		if (any_pending && t - t_any >= RETURN_DELAY_MS) {
+			any_pending = 0;
+			if (other_app_running("")) log_line("Another app is running, no return");
+			else launch_vitadeck();
 		}
 		sceKernelDelayThread(POLL_US);
 	}

@@ -197,6 +197,7 @@ int plat_scan_apps(PlatApp **out)
 			char t[128];
 			if (sfo_get(d, len, "STITLE", t, sizeof t) == 0 && t[0]) snprintf(a->title, sizeof a->title, "%s", t);
 			else if (sfo_get(d, len, "TITLE", t, sizeof t) == 0 && t[0]) snprintf(a->title, sizeof a->title, "%s", t);
+			if (sfo_get(d, len, "APP_VER", t, sizeof t) == 0) snprintf(a->ver, sizeof a->ver, "%.7s", t);
 			free(d);
 		}
 		for (char *c = a->title; *c; c++) if (*c == '\n' || *c == '\r') *c = ' ';
@@ -431,26 +432,32 @@ int plat_plugin_uninstall(void)
 	return r;
 }
 
+/* plugin.txt: autostart=0|1, return=0|1, always=0|1 (missing: 1, 1, 0).
+   *ret is the return mode: 0 = off, 1 = after games VitaDeck started, 2 = always */
 void plat_plugin_cfg_load(int *autostart, int *ret)
 {
-	*autostart = 1; *ret = 1;
+	int r = 1, always = 0;
+	*autostart = 1;
 	unsigned char *d; int len;
-	if (plat_read_file(PLUG_CFG, &d, &len) < 0) return;
-	for (int i = 0; i < len; ) {
-		const char *l = (const char *)d + i;
-		int rest = len - i;
-		if (rest > 10 && !strncmp(l, "autostart=", 10)) *autostart = l[10] != '0';
-		if (rest > 7 && !strncmp(l, "return=", 7)) *ret = l[7] != '0';
-		while (i < len && d[i] != '\n') i++;
-		i++;
+	if (plat_read_file(PLUG_CFG, &d, &len) >= 0) {
+		for (int i = 0; i < len; ) {
+			const char *l = (const char *)d + i;
+			int rest = len - i;
+			if (rest > 10 && !strncmp(l, "autostart=", 10)) *autostart = l[10] != '0';
+			if (rest > 7 && !strncmp(l, "return=", 7)) r = l[7] != '0';
+			if (rest > 7 && !strncmp(l, "always=", 7)) always = l[7] != '0';
+			while (i < len && d[i] != '\n') i++;
+			i++;
+		}
+		free(d);
 	}
-	free(d);
+	*ret = !r ? 0 : always ? 2 : 1;
 }
 
 int plat_plugin_cfg_save(int autostart, int ret)
 {
-	char b[48];
-	int n = snprintf(b, sizeof b, "autostart=%d\nreturn=%d\n", autostart ? 1 : 0, ret ? 1 : 0);
+	char b[64];
+	int n = snprintf(b, sizeof b, "autostart=%d\nreturn=%d\nalways=%d\n", autostart ? 1 : 0, ret > 0, ret == 2);
 	return plat_write_file(PLUG_CFG, b, n);
 }
 
@@ -594,6 +601,65 @@ void plat_net_end(void)
 }
 
 int plat_mkdir(const char *path) { return sceIoMkdir(path, 0777); }
+
+int plat_storage(uint64_t *free_b, uint64_t *total_b)
+{
+	uint64_t mx = 0, fr = 0;
+	int r = sceAppMgrGetDevInfo("ux0:", &mx, &fr);
+	if (r < 0 || !mx) return -1;
+	*free_b = fr; *total_b = mx;
+	return 0;
+}
+
+/* recursive folder size; iterative with a small path stack (no deep recursion on the job stack) */
+static int64_t dir_size(const char *root)
+{
+	enum { DEPTH = 24 };
+	static char stack[DEPTH][256];
+	int sp = 0;
+	int64_t sum = 0;
+	snprintf(stack[sp++], sizeof stack[0], "%s", root);
+	while (sp > 0) {
+		char dir[256];
+		snprintf(dir, sizeof dir, "%s", stack[--sp]);
+		SceUID fd = sceIoDopen(dir);
+		if (fd < 0) continue;
+		SceIoDirent de;
+		memset(&de, 0, sizeof de);
+		while (sceIoDread(fd, &de) > 0) {
+			if (de.d_name[0] == '.' && (!de.d_name[1] || (de.d_name[1] == '.' && !de.d_name[2]))) continue;
+			if (SCE_S_ISDIR(de.d_stat.st_mode)) {
+				size_t dl = strlen(dir), nl = strlen(de.d_name);
+				if (sp < DEPTH && dl + 1 + nl < sizeof stack[0]) {   /* longer paths are skipped, not truncated */
+					memcpy(stack[sp], dir, dl); stack[sp][dl] = '/';
+					memcpy(stack[sp] + dl + 1, de.d_name, nl + 1);
+					sp++;
+				}
+			} else sum += de.d_stat.st_size;
+			memset(&de, 0, sizeof de);
+		}
+		sceIoDclose(fd);
+	}
+	return sum;
+}
+
+int plat_app_info(const char *id, int64_t *app_b, int64_t *patch_b, char *patch_ver, int n)
+{
+	char p[128];
+	snprintf(p, sizeof p, "ux0:app/%s", id);
+	*app_b = dir_size(p);
+	snprintf(p, sizeof p, "ux0:patch/%s", id);
+	*patch_b = file_exists(p) ? dir_size(p) : 0;
+	patch_ver[0] = 0;
+	snprintf(p, sizeof p, "ux0:patch/%s/sce_sys/param.sfo", id);
+	unsigned char *d; int len;
+	if (*patch_b > 0 && plat_read_file(p, &d, &len) >= 0) {
+		char t[16];
+		if (sfo_get(d, len, "APP_VER", t, sizeof t) == 0) snprintf(patch_ver, n, "%s", t);
+		free(d);
+	}
+	return 0;
+}
 
 /* Brightness: SceAVConfig only drives the panel; the system setting (what the
    PS button quick menu shows and restores) lives in the registry key

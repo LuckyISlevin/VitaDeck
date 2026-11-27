@@ -72,6 +72,7 @@ typedef struct {
 	char id[16];
 	char title[128];
 	char icon_path[128];
+	char ver[8];       /* APP_VER of the installed app */
 	int cat;
 	int fav;
 	int hidden;        /* hidden from home and library (except the "Ausgeblendet" tab) */
@@ -178,6 +179,16 @@ static void fmt_play(unsigned sec, char *out, int n)
 		if (t % 10) snprintf(out, n, "%u,%u Std.", t / 10, t % 10);
 		else snprintf(out, n, "%u Std.", t / 10);
 	} else snprintf(out, n, "%u Std.", (min + 30) / 60);
+}
+
+/* "850 MB", "3,4 GB", "120 GB" */
+static void fmt_size(int64_t b, char *out, int n)
+{
+	if (b < 0) { snprintf(out, n, "?"); return; }
+	double mb = b / 1048576.0, gb = mb / 1024.0;
+	if (gb >= 100) snprintf(out, n, "%d GB", (int)(gb + 0.5));
+	else if (gb >= 1) { int t = (int)(gb * 10 + 0.5); snprintf(out, n, "%d,%d GB", t / 10, t % 10); }
+	else snprintf(out, n, "%d MB", (int)(mb + 0.5) < 1 ? 1 : (int)(mb + 0.5));
 }
 
 static const char *cat_name(int c)
@@ -1498,9 +1509,20 @@ static void draw_set(void)
 		hit(16, y, SET_W - 32, h, H_SET, i, 0);
 		y -= 4;
 		text(FONT_BOLD, FS(14), 30, y + 10, lbl[i], rgb(C_TXT), 255);
-		if (i < 2) {
+		if (i == 0) {
+			/* three modes instead of a switch: off / after VitaDeck starts / always */
+			static const char *val[3] = { "Aus", "VitaDeck-Starts", "Immer" };
+			static const char *hint[3] = { "VitaDeck öffnet sich nach Spielende nicht",
+			                               "Nach Spielen, die du in VitaDeck startest",
+			                               "Nach jedem Spiel, auch aus der LiveArea" };
+			int m = S.set_ret < 0 || S.set_ret > 2 ? 1 : S.set_ret;
+			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 200, hint[m], rgb(C_MUTE), 255);
+			int vw = text_w(FONT_BOLD, FS(12), val[m]) + 24;
+			gfx_rrect(SET_W - 32 - vw, y + 16, vw, 28, 14, rgb(m ? C_ACC : C_TRACK), 255);
+			text(FONT_BOLD, FS(12), SET_W - 32 - vw + 12, y + 21, val[m], rgb(m ? C_INK : C_TXT2), 255);
+		} else if (i == 1) {
 			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 130, sub[i], rgb(C_MUTE), 255);
-			toggle_sw(SET_W - 76, y + 20, i == 0 ? S.set_ret : S.set_as);
+			toggle_sw(SET_W - 76, y + 20, S.set_as);
 		} else if (i == 4) {
 			char st[64];
 			snprintf(st, sizeof st, "%s · ←/→ wechseln", TH.name);
@@ -1615,7 +1637,7 @@ static void settings_act(int i)
 	S.si = i;
 	if (i == 4) { theme_step(1); return; }
 	if (i == 0 || i == 1) {
-		if (i == 0) S.set_ret = !S.set_ret; else S.set_as = !S.set_as;
+		if (i == 0) S.set_ret = (S.set_ret + 1) % 3; else S.set_as = !S.set_as;
 		if (plat_plugin_cfg_save(S.set_as, S.set_ret) < 0) toast("Einstellung konnte nicht gespeichert werden");
 	} else if (i == 3) {
 		cover_start();
@@ -1685,6 +1707,13 @@ static void draw_qa(void)
 	char b[128];
 	if (pct >= 0) snprintf(b, sizeof b, "Akku %d %%%s", pct, chg ? " · lädt" : "");
 	else snprintf(b, sizeof b, "Akku: unbekannt");
+	uint64_t fr, tot;
+	if (plat_storage(&fr, &tot) == 0) {
+		char f1[24], f2[24];
+		fmt_size((int64_t)fr, f1, sizeof f1); fmt_size((int64_t)tot, f2, sizeof f2);
+		int n = (int)strlen(b);
+		snprintf(b + n, sizeof b - n, " · ux0: %s frei von %s", f1, f2);
+	}
 	text(FONT_BOLD, FS(14), px + 34, y + 14, b, rgb(C_TXT), 255);
 	snprintf(b, sizeof b, "%d Apps · Cover: %d, nur Icon: %d, Fehler: %d · Hell.: %d", napps, bg_ok, bg_none, bg_bad, plat_bright_raw);
 	text(FONT_REG, FS(13), px + 34, y + 40, b, rgb(C_TXT2), 255);
@@ -1722,10 +1751,42 @@ static int ctx_items(const App *a, const char *out[], int act[])
 	return n;
 }
 
+/* app details for the options menu: sizes need a directory walk, so they are
+   computed on the job thread (main thread must not do file IO while jobs run) */
+static struct { volatile int state; char id[16]; int64_t app, patch; char pver[16]; } cinfo;   /* 0 idle, 1 wanted, 2 running, 3 done */
+
+static void cinfo_work(void *arg)
+{
+	(void)arg;
+	plat_app_info(cinfo.id, &cinfo.app, &cinfo.patch, cinfo.pver, sizeof cinfo.pver);
+	__sync_synchronize();
+	cinfo.state = 3;
+}
+
+static void cinfo_request(const App *a)
+{
+	if (cinfo.state == 2) return;   /* still running: picked up once it is done */
+	if (cinfo.state == 3 && !strcmp(cinfo.id, a->id)) return;
+	snprintf(cinfo.id, sizeof cinfo.id, "%s", a->id);
+	cinfo.state = 1;
+}
+
+static void pump_cinfo(void)
+{
+	if (cinfo.state == 1) {
+		cinfo.state = 2;   /* before starting: the job may finish (state 3) before plat_job returns */
+		if (plat_job(cinfo_work, NULL) < 0) cinfo.state = 1;   /* worker busy: try again next frame */
+	}
+	static int seen;
+	if (cinfo.state == 3 && !seen && S.ov == OV_CTX) S.dirty = 1;   /* redraw once with the result */
+	seen = cinfo.state == 3;
+}
+
 static void draw_ctx(void)
 {
 	dim();
 	App *a = &apps[S.ctx_app];
+	cinfo_request(a);
 	const char *it[CTX_MAX];
 	int act[CTX_MAX];
 	int n = ctx_items(a, it, act);
@@ -1740,7 +1801,14 @@ static void draw_ctx(void)
 		gfx_img(ctx_img, x + 16, y + 14, 8, 255);
 	}
 	text_fit(FONT_BOLD, FS(16), x + 76, y + 18, w - 92, a->title, rgb(C_TXT), 255);
-	text(FONT_REG, FS(12), x + 76, y + 42, a->id, rgb(C_MUTE), 255);
+	char info[128], sz[24];
+	int k = snprintf(info, sizeof info, "%s", a->id);
+	int done = cinfo.state == 3 && !strcmp(cinfo.id, a->id);
+	const char *ver = done && cinfo.pver[0] ? cinfo.pver : a->ver;
+	if (ver[0]) k += snprintf(info + k, sizeof info - k, " · Version %s", ver);
+	if (done) { fmt_size(cinfo.app + cinfo.patch, sz, sizeof sz); snprintf(info + k, sizeof info - k, " · %s", sz); }
+	else snprintf(info + k, sizeof info - k, " · Größe wird ermittelt …");
+	text_fit(FONT_REG, FS(12), x + 76, y + 42, w - 92, info, rgb(C_MUTE), 255);
 	int iy = y + 76;
 	for (int i = 0; i < n; i++) {
 		int on = i == S.ci;
@@ -1852,6 +1920,7 @@ void ui_scan(void)
 		snprintf(apps[i].id, sizeof apps[i].id, "%s", pa[i].id);
 		snprintf(apps[i].title, sizeof apps[i].title, "%s", pa[i].title);
 		snprintf(apps[i].icon_path, sizeof apps[i].icon_path, "%s", pa[i].icon_path);
+		snprintf(apps[i].ver, sizeof apps[i].ver, "%s", pa[i].ver);
 		apps[i].cat = pa[i].cat;
 	}
 	napps = n < 0 ? 0 : n;
@@ -1953,6 +2022,7 @@ static void press(unsigned b)
 		if (b == B_UP) S.si = S.si > 0 ? S.si - 1 : 0;
 		else if (b == B_DOWN) S.si = S.si < NSET - 1 ? S.si + 1 : NSET - 1;
 		else if (b == B_X) settings_act(S.si);
+		else if (b == B_LEFT && S.si == 0) { S.set_ret = (S.set_ret + 1) % 3; settings_act(0); }   /* +1 +1 = one step back */
 		else if ((b == B_LEFT || b == B_RIGHT) && S.si < 2) settings_act(S.si);
 		else if ((b == B_LEFT || b == B_RIGHT) && S.si == 4) theme_step(b == B_LEFT ? -1 : 1);
 		else if (b == B_O) { S.ov = OV_MENU; S.mi = 3; }
@@ -2310,6 +2380,7 @@ int ui_frame(const Input *in, u32 *buf)
 	}
 
 	pump_icons();
+	pump_cinfo();
 	pump_bg(now);
 	if (cov.state == 1 && (S.ov == OV_SET || S.ov == OV_CONFIRM)) {   /* live progress */
 		static int shown = -1;
