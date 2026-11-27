@@ -63,6 +63,10 @@ int plat_file_exists(const char *path) { FILE *f = fopen(path, "rb"); if (!f) re
 int plat_file_size(const char *path) { FILE *f = fopen(path, "rb"); if (!f) return -1; fseek(f, 0, SEEK_END); long n = ftell(f); fclose(f); return (int)n; }
 int plat_mkdir(const char *path) { (void)path; return 0; }
 int plat_storage(uint64_t *f, uint64_t *t) { *f = 78ull << 30; *t = 120ull << 30; return 0; }
+static int host_oc;
+int plat_oc_available(void) { return 1; }
+int plat_oc_get(const char *id) { (void)id; return host_oc; }
+int plat_oc_set(const char *id, int p) { (void)id; host_oc = p; return 0; }
 int plat_app_info(const char *id, int64_t *a, int64_t *p, char *v, int n) { (void)id; *a = 1288490188; *p = 0; snprintf(v, n, "%s", ""); return 0; }
 int plat_job(void (*job)(void *), void *arg) { job(arg); return 0; }
 int plat_job_threaded(void) { return 0; }

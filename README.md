@@ -70,6 +70,7 @@ Swipe: sideways scrolls a home row, up/down jumps between rows; in the library u
 - Main menu: home, library, reload app list, settings, standby, restart, quit launcher
 - Quick access: brightness (kept in sync with the system setting), volume (system-wide via SceAVConfig), battery, free space on ux0:, render-time diagnostics
 - Options (△) show the title ID, version (of the installed update, if any) and the size on the memory card
+- **Per-game clocks** with [PSVshell](https://github.com/Electry/PSVshell) installed (kernel plugin, not bundled): options (△) → "Takt" switches between Standard, Schnell (CPU 444 MHz) and Maximal (CPU 500 MHz); VitaDeck writes the PSVshell profile for that game, PSVshell applies it at the next start
 - **Colour schemes** (Settings → "Farbschema", ←/→): Nacht (default), Glut, Aurora, Amethyst, OLED – switches instantly
 - Header with Wi-Fi signal (hidden without a connection), battery and clock
 - **Return plugin** (Settings → "Rückkehr-Plugin" → install): a small taiHEN user plugin for the system shell.

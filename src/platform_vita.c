@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <ctype.h>
 
 #define SELF_ID "VLAUNCH01"
@@ -408,6 +409,98 @@ int plat_plugin_outdated(void)
 		free(d);
 	}
 	return v != PLUGIN_VERSION;
+}
+
+/* ---------- per-game clocks via PSVshell ----------
+   PSVshell (github.com/Electry/PSVshell, v1.1/v1.2beta) loads ur0:data/PSVshell/profiles/<TITLEID>
+   when a game starts: char ver[8] = "PSVS0100", psvs_oc_mode_t mode[4] (0 default, 1 manual)
+   and int freq[4] for CPU, GPU (ES4), BUS, XBAR. arm-vita-eabi uses 1-byte enums, so the
+   modes are single bytes and the file is 28 bytes (8 + 4 + 16). VitaDeck only writes these
+   data files. (VitaDeck builds before this fix wrote a 40-byte variant with int modes, which
+   PSVshell misread as CPU 1 MHz – plat_oc_get rewrites those.) */
+#define OC_DIR "ur0:data/PSVshell/profiles"
+typedef struct { char ver[8]; uint8_t mode[4]; int32_t freq[4]; } OcProfile;
+typedef struct { char ver[8]; int32_t mode[4]; int32_t freq[4]; } OcProfileBroken;   /* 40 bytes */
+_Static_assert(sizeof(OcProfile) == 28, "PSVshell profile layout");
+
+int plat_oc_available(void)
+{
+	static int cached = -1;
+	if (cached >= 0) return cached;
+	cached = 0;
+	unsigned char *d; int len;
+	if (plat_read_file(tai_config(), &d, &len) < 0) return cached;
+	for (int i = 0; i < len; ) {
+		int s = i;
+		while (i < len && d[i] != '\n') i++;
+		const char *l = (const char *)d + s;
+		int n = i - s;
+		while (n > 0 && (*l == ' ' || *l == '\t')) { l++; n--; }
+		if (n > 0 && *l != '#')
+			for (int k = 0; k + 14 <= n; k++) if (!strncasecmp(l + k, "psvshell.skprx", 14)) { cached = 1; break; }
+		i++;
+	}
+	free(d);
+	/* once per start (before any job runs): repair 40-byte profiles from earlier builds */
+	SceUID fd = sceIoDopen(OC_DIR);
+	if (fd >= 0) {
+		SceIoDirent de;
+		memset(&de, 0, sizeof de);
+		while (sceIoDread(fd, &de) > 0) {
+			if (!SCE_S_ISDIR(de.d_stat.st_mode) && de.d_stat.st_size == sizeof(OcProfileBroken) && strlen(de.d_name) < 16)
+				plat_oc_get(de.d_name);
+			memset(&de, 0, sizeof de);
+		}
+		sceIoDclose(fd);
+	}
+	return cached;
+}
+
+int plat_oc_get(const char *id)
+{
+	char p[96];
+	snprintf(p, sizeof p, OC_DIR "/%s", id);
+	unsigned char *d; int len;
+	if (plat_read_file(p, &d, &len) < 0) return OC_DEFAULT;
+	int mode[4], freq[4], ok = 0;
+	if (len == (int)sizeof(OcProfile)) {
+		OcProfile o; memcpy(&o, d, sizeof o);
+		ok = !memcmp(o.ver, "PSVS0100", 8);
+		for (int k = 0; k < 4; k++) { mode[k] = o.mode[k]; freq[k] = o.freq[k]; }
+	} else if (len == (int)sizeof(OcProfileBroken)) {
+		OcProfileBroken o; memcpy(&o, d, sizeof o);
+		ok = !memcmp(o.ver, "PSVS0100", 8);
+		for (int k = 0; k < 4; k++) { mode[k] = o.mode[k]; freq[k] = o.freq[k]; }
+		ok = ok ? 2 : 0;   /* our own broken variant: repair below */
+	}
+	free(d);
+	if (!ok) return OC_CUSTOM;
+	int fast = mode[0] == 1 && freq[0] == 444, max = mode[0] == 1 && freq[0] == 500;
+	int rest = mode[1] == 1 && freq[1] == 222 && mode[2] == 1 && freq[2] == 222 && mode[3] == 1 && freq[3] == 166;
+	int preset = rest && fast ? OC_FAST : rest && max ? OC_MAX : OC_CUSTOM;
+	if (ok == 2) {   /* rewrite in the layout PSVshell really reads (or drop it if it was no preset) */
+		if (preset == OC_CUSTOM) { sceIoRemove(p); return OC_DEFAULT; }
+		plat_oc_set(id, preset);
+	}
+	return preset;
+}
+
+int plat_oc_set(const char *id, int preset)
+{
+	char p[96];
+	snprintf(p, sizeof p, OC_DIR "/%s", id);
+	if (preset == OC_DEFAULT) { sceIoRemove(p); return 0; }
+	sceIoMkdir("ur0:data/PSVshell", 0777);
+	sceIoMkdir(OC_DIR, 0777);
+	OcProfile o;
+	memset(&o, 0, sizeof o);
+	memcpy(o.ver, "PSVS0100", 8);
+	for (int k = 0; k < 4; k++) o.mode[k] = 1;
+	o.freq[0] = preset == OC_MAX ? 500 : 444;   /* CPU */
+	o.freq[1] = 222;                             /* GPU ES4 */
+	o.freq[2] = 222;                             /* BUS */
+	o.freq[3] = 166;                             /* XBAR */
+	return plat_write_file(p, &o, sizeof o);
 }
 
 /* An installed plugin from an older VitaDeck is replaced by the bundled one

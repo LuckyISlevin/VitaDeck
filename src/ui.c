@@ -1733,9 +1733,10 @@ static void draw_qa(void)
 static Img *ctx_img;          /* 48 px icon for the context menu */
 static const Img *ctx_src;
 
-enum { CA_LAUNCH, CA_FAV, CA_UNRECENT, CA_HIDE, CA_SORT };
-#define CTX_MAX 5
+enum { CA_LAUNCH, CA_FAV, CA_UNRECENT, CA_HIDE, CA_SORT, CA_OC };
+#define CTX_MAX 6
 
+static struct { volatile int state; char id[16]; int64_t app, patch; char pver[16]; int oc; } cinfo;   /* 0 idle, 1 wanted, 2 running, 3 done */
 static int ctx_items(const App *a, const char *out[], int act[])
 {
 	int n = 0;
@@ -1748,17 +1749,24 @@ static int ctx_items(const App *a, const char *out[], int act[])
 		snprintf(sl, sizeof sl, "Sortieren: %s", SORTS[(S.sort + 1) % NSORTS]);
 		out[n] = sl; act[n++] = CA_SORT;
 	}
+	/* per-game clocks (PSVshell profile); the current one comes with the app details job */
+	static char oc[48];
+	static const char *OCN[] = { "Standard", "Schnell (444 MHz)", "Maximal (500 MHz)", "Eigenes (PSVshell)" };
+	if (!plat_oc_available()) snprintf(oc, sizeof oc, "Takt: PSVshell nicht installiert");
+	else if (cinfo.state == 3 && !strcmp(cinfo.id, a->id)) snprintf(oc, sizeof oc, "Takt: %s", OCN[cinfo.oc & 3]);
+	else snprintf(oc, sizeof oc, "Takt: …");
+	out[n] = oc; act[n++] = CA_OC;
 	return n;
 }
 
 /* app details for the options menu: sizes need a directory walk, so they are
    computed on the job thread (main thread must not do file IO while jobs run) */
-static struct { volatile int state; char id[16]; int64_t app, patch; char pver[16]; } cinfo;   /* 0 idle, 1 wanted, 2 running, 3 done */
 
 static void cinfo_work(void *arg)
 {
 	(void)arg;
 	plat_app_info(cinfo.id, &cinfo.app, &cinfo.patch, cinfo.pver, sizeof cinfo.pver);
+	cinfo.oc = plat_oc_available() ? plat_oc_get(cinfo.id) : OC_DEFAULT;
 	__sync_synchronize();
 	cinfo.state = 3;
 }
@@ -1934,6 +1942,7 @@ void ui_scan(void)
 	if (sb >= 0) { S.bright = sb < 10 ? 10 : sb; S.bright_ok = 1; }
 	else S.bright_ok = plat_set_brightness(S.bright) >= 0;
 	art_boot_load();   /* cached covers right away – no PNG decoding at startup */
+	plat_oc_available();   /* reads the taiHEN config once, before any job runs */
 	static int plug_checked;   /* once per start: bring an installed plugin up to date */
 	if (!plug_checked) {
 		plug_checked = 1;
@@ -2006,6 +2015,17 @@ static void ctx_act(int i)
 		break;
 	}
 	case CA_SORT: lib_toggle_sort(S.ctx_app); break;
+	case CA_OC: {
+		S.ov = OV_CTX;   /* stay in the menu: the entry shows the new value */
+		if (!plat_oc_available()) { toast("PSVshell (Kernel-Plugin) installieren, z. B. über VitaDB"); break; }
+		if (cinfo.state != 3 || strcmp(cinfo.id, a->id)) break;   /* current value not read yet */
+		int next = cinfo.oc == OC_FAST ? OC_MAX : cinfo.oc == OC_MAX ? OC_DEFAULT : cinfo.oc == OC_CUSTOM ? OC_DEFAULT : OC_FAST;
+		if (plat_oc_set(a->id, next) < 0) { toast("Profil konnte nicht gespeichert werden"); break; }
+		cinfo.oc = next;
+		toast(next == OC_DEFAULT ? "Takt: Standard · gilt ab dem nächsten Start" :
+		      next == OC_FAST ? "Takt: CPU 444 MHz · gilt ab dem nächsten Start" : "Takt: CPU 500 MHz · gilt ab dem nächsten Start");
+		break;
+	}
 	}
 }
 

@@ -47,6 +47,12 @@ int plat_file_exists(const char *path);
 int plat_file_size(const char *path);   /* bytes, <0 if missing */
 int plat_mkdir(const char *path);
 int plat_storage(uint64_t *free_bytes, uint64_t *total_bytes);   /* ux0:, <0 = unknown */
+/* per-game clocks through PSVshell (kernel plugin, installed by the user): VitaDeck only
+   writes/reads its profile files ur0:data/PSVshell/profiles/<TITLEID> */
+enum { OC_DEFAULT = 0, OC_FAST = 1, OC_MAX = 2, OC_CUSTOM = 3 };
+int plat_oc_available(void);                 /* 1 if PSVshell is in the taiHEN config (cached) */
+int plat_oc_get(const char *id);             /* OC_*; file IO – call from a job or a user action */
+int plat_oc_set(const char *id, int preset); /* OC_DEFAULT deletes the profile; <0 = error */
 /* blocking – call only from a job: bytes of the app, of its update (ux0:patch, 0 = none)
    and the update's APP_VER ("" = no update) */
 int plat_app_info(const char *id, int64_t *app_bytes, int64_t *patch_bytes, char *patch_ver, int n);

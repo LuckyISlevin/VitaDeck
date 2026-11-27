@@ -1,14 +1,13 @@
 # VitaDeck – Feature ideas
 
 As of 2026-11-27, after v0.7. Sorted by value relative to effort.
-**Done so far: 1, 2, 3, 4, 5, 6.** Next candidates: 14 (overclocking), then 7–12.
+**Done so far: 1–6 and 14.** Next candidates: 7–12.
 
 ## Medium effort, high value
 7. **Recognise PSP/PS1 bubbles** – Adrenaline bubbles currently end up under "Homebrew"; use the category in `param.sfo` to show them as their own "PSP" row (no launching of ISOs by VitaDeck itself).
 8. **Home screen background from the hero image** – blurred and darkened over the whole screen, cached like the header/hero.
 
 ## Larger
-14. **Overclocking per game** – CPU/GPU/bus clock profiles (e.g. 333 → 444 MHz) chosen per app in the options menu (△). Clocks are per running app and reset when a game starts, so this needs a **kernel plugin** that applies the profile at game start (the SceShell user plugin cannot). *Research first:* how existing tools (e.g. PSVshell) do it; keep a safe default and an escape hatch.
 9. **Custom collections** – rows such as "Racing" or "With friends", assigned via the options menu.
 10. **Search / A–Z jump** in the library (system keyboard `sceImeDialog`); only worth it with many apps.
 11. **Navigation sounds** – soft click/confirm sounds; VitaDeck has no audio output yet (SceAudio).
@@ -25,3 +24,4 @@ As of 2026-11-27, after v0.7. Sorted by value relative to effort.
 - 2. "Nach Spielende zurück" has three modes: off, after VitaDeck starts, always (also LiveArea starts; plugin v3, `always=` in plugin.txt)
 - 3. Options menu (△) shows title ID, version (update version if one is installed) and size incl. update
 - 4. Quick access shows free space on ux0:
+- 14. Per-game clocks via PSVshell (installed by the user): the options menu writes its profiles ur0:data/PSVshell/profiles/<TITLEID> – Standard (none), Schnell (CPU 444 / GPU 222 / BUS 222 / XBAR 166), Maximal (CPU 500). Profile = 28 bytes (1-byte enums on arm-vita-eabi).
