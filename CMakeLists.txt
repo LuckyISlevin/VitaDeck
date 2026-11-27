@@ -13,7 +13,7 @@ include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 
 set(VITA_APP_NAME "VitaDeck")
 set(VITA_TITLEID  "VLAUNCH01")
-set(VITA_VERSION  "02.00")
+set(VITA_VERSION  "02.10")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -Wall -Wno-unused-function")
 
 add_executable(launcher src/gfx.c src/img.c src/ui.c src/platform_vita.c)

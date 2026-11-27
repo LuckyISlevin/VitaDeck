@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 
 $TitleName = 'VitaDeck'
 $TitleId   = 'VLAUNCH01'   # do not change, favourites would be lost
-$Version   = '02.00'   # v0.11 (VD_VERSION in src/ui.c)
+$Version   = '02.10'   # v0.12 (VD_VERSION in src/ui.c)
 
 $Sdk = if ($env:VITASDK) { $env:VITASDK } else { 'C:\vitasdk' }
 $Bin = Join-Path $Sdk 'bin'

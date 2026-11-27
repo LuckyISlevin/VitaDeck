@@ -51,7 +51,7 @@ static int theme_idx;
 #define C_STAR   0xffd166
 
 /* shown in the main menu; keep in sync with APP_VER in build.ps1 / CMakeLists.txt / Makefile */
-#define VD_VERSION "v0.11"
+#define VD_VERSION "v0.12"
 
 /* UI font size: +2 px over the original layout sizes (chip labels <= 10 px stay) */
 #define FS(n) ((n) <= 10 ? (n) : (n) + 2)
@@ -1238,8 +1238,7 @@ static void draw_boot(void)
 #define HERO_TX    (14 + HBOX_W + 20)   /* text column right of the box art */
 #define HERO_BTN_X (24 + HERO_TX)
 #define HERO_BTN_Y (HERO_Y + HERO_DY + 106)
-#define TOP_KEYN   13
-static int homebg_gen;   /* home background generation (defined with the home background below) */
+#define TOP_KEYN   12
 static u32 *topbuf;
 static int top_ok, top_keyv[TOP_KEYN];
 
@@ -1254,7 +1253,6 @@ static void top_key(int *k)
 	k[8] = plat_battery(&chg); k[9] = chg;
 	k[10] = (int)hash_s(a->id);
 	k[11] = (a->bg != NULL) | (a->boxh != NULL) << 1 | (wifi_level + 1) << 2;
-	k[12] = homebg_gen;   /* the full-screen background shows around the hero too */
 }
 
 static void draw_hero(int ai)
@@ -1314,74 +1312,6 @@ static void draw_hero(int ai)
 	text(FONT_REG, FS(12), hx, by + 11, a->fav ? "Favorit entfernen" : "Favorit", rgb(C_TXT2), 255);
 }
 
-/* ---------- home background (ROADMAP 8) ----------
-   The hero app's small blurred background (bgs), cropped to the screen's aspect,
-   scaled to full screen and darkened towards C_BG. Built on the UI thread (a few ms,
-   pure pixel work) once the focus has rested for a moment; drawn with row copies. */
-static u32 *homebg;
-static char homebg_id[16];
-static int homebg_gen;          /* bumped on every rebuild – part of the hero cache key */
-static uint64_t homebg_since;
-static int homebg_want = -1;
-
-static void home_bg_build(const App *a)
-{
-	const Img *s = a ? a->bgs : NULL;
-	if (!s) { if (homebg_id[0]) { homebg_id[0] = 0; homebg_gen++; } return; }
-	if (!homebg) homebg = malloc(SCR_W * SCR_H * 4);
-	if (!homebg) return;
-	/* crop the centre of the wide hero strip to 960:544 */
-	float cw = s->h * (float)SCR_W / SCR_H, cx = (s->w - cw) * 0.5f;
-	if (cw > s->w) { cw = (float)s->w; cx = 0; }
-	u32 bg = rgb(C_BG);
-	int br = bg & 0xFF, bgc = (bg >> 8) & 0xFF, bb = (bg >> 16) & 0xFF;
-	for (int y = 0; y < SCR_H; y++) {
-		float fy = (y + 0.5f) * s->h / SCR_H - 0.5f;
-		int y0 = (int)fy; float ty = fy - y0;
-		if (y0 < 0) { y0 = 0; ty = 0; }
-		int y1 = y0 + 1 < s->h ? y0 + 1 : y0;
-		/* fade to the plain background towards the bottom, where the rows are */
-		int keep = 70 - 40 * y / SCR_H;   /* % of the picture: 70 at the top, 30 at the bottom */
-		for (int x = 0; x < SCR_W; x++) {
-			float fx = cx + (x + 0.5f) * cw / SCR_W - 0.5f;
-			int x0 = (int)fx; float tx = fx - x0;
-			if (x0 < 0) { x0 = 0; tx = 0; }
-			int x1 = x0 + 1 < s->w ? x0 + 1 : x0;
-			u32 p00 = s->px[y0 * s->w + x0], p01 = s->px[y0 * s->w + x1], p10 = s->px[y1 * s->w + x0], p11 = s->px[y1 * s->w + x1];
-			u32 o = 0xFF000000u;
-			for (int k = 0; k < 3; k++) {
-				int sh = 8 * k;
-				float c = ((p00 >> sh) & 0xFF) * (1 - tx) * (1 - ty) + ((p01 >> sh) & 0xFF) * tx * (1 - ty) +
-				          ((p10 >> sh) & 0xFF) * (1 - tx) * ty + ((p11 >> sh) & 0xFF) * tx * ty;
-				int base = k == 0 ? br : k == 1 ? bgc : bb;
-				int v = (int)(c * 0.35f * keep / 100 + base * (100 - keep * 0.35f) / 100);   /* darkened */
-				o |= (u32)(v > 255 ? 255 : v) << sh;
-			}
-			homebg[y * SCR_W + x] = o;
-		}
-	}
-	snprintf(homebg_id, sizeof homebg_id, "%s", a->id);
-	homebg_gen++;
-}
-
-/* called every frame on the home screen: rebuild once the hero app has been stable for 250 ms */
-static void home_bg_pump(uint64_t now)
-{
-	if (S.view != V_HOME || !nrows) return;
-	int ai = home_app();
-	if (ai < 0) return;
-	if (ai != homebg_want) { homebg_want = ai; homebg_since = now; return; }
-	if (now - homebg_since < 250) return;
-	const App *a = &apps[ai];
-	if (a->bgs && strcmp(homebg_id, a->id)) { home_bg_build(a); S.dirty = 1; }
-}
-
-static void home_bg_rows(int y0, int y1)
-{
-	if (!homebg || !homebg_id[0]) { gfx_rect(0, y0, SCR_W, y1 - y0, rgb(C_BG), 255); return; }
-	memcpy(gfx_buffer() + (size_t)y0 * SCR_W, homebg + (size_t)y0 * SCR_W, (size_t)(y1 - y0) * SCR_W * 4);
-}
-
 static void draw_home(void)
 {
 	uint64_t t = plat_us();
@@ -1392,11 +1322,11 @@ static void draw_home(void)
 		top_key(key);
 		if (top_ok && !memcmp(key, top_keyv, sizeof key)) {
 			memcpy(gfx_buffer(), topbuf, SCR_W * HOME_TOP * 4);
-			home_bg_rows(HOME_TOP, SCR_H);
+			gfx_rect(0, HOME_TOP, SCR_W, SCR_H - HOME_TOP, rgb(C_BG), 255);
 			hit(HERO_BTN_X, HERO_BTN_Y, 136, 36, H_HERO, 0, 0);
 			perf_add(0, &t);
 		} else {
-			home_bg_rows(0, SCR_H);
+			gfx_clear(rgb(C_BG));
 			header("Startseite");
 			perf_add(0, &t);
 			draw_hero(home_app());
@@ -1786,8 +1716,6 @@ static const Img *ctx_src;
 static void theme_step(int d)
 {
 	u32 oldc = rgb(C_CARD);
-	homebg_id[0] = 0;   /* darkened towards the old C_BG: rebuild */
-	homebg_gen++;
 	theme_idx = (theme_idx + d + NTHEMES) % NTHEMES;
 	u32 newc = rgb(C_CARD);
 	for (int i = 0; i < napps; i++) {
@@ -2867,7 +2795,6 @@ int ui_frame(const Input *in, u32 *buf)
 	pump_icons();
 	pump_cinfo();
 	pump_bg(now);
-	home_bg_pump(now);
 	if (cov.state == 1 && (S.ov == OV_SET || S.ov == OV_CONFIRM)) {   /* live progress */
 		static int shown = -1;
 		if (shown != cov.done) { shown = cov.done; S.dirty = 1; }
