@@ -1,10 +1,7 @@
 # VitaDeck – Feature ideas
 
 As of 2026-11-27, after v0.7. Sorted by value relative to effort.
-**Done so far: 1, 2, 3, 4, 5, 6.** Next candidates: 13 (airplane mode), 14 (overclocking), then 7–12.
-
-## Small but noticeable
-13. **Airplane mode in the main menu (START)** – toggle entry next to standby/restart. *Research first:* which registry key / system call switches airplane mode (and whether the shell picks up the change without a restart).
+**Done so far: 1, 2, 3, 4, 5, 6.** Next candidates: 14 (overclocking), then 7–12.
 
 ## Medium effort, high value
 7. **Recognise PSP/PS1 bubbles** – Adrenaline bubbles currently end up under "Homebrew"; use the category in `param.sfo` to show them as their own "PSP" row (no launching of ISOs by VitaDeck itself).
