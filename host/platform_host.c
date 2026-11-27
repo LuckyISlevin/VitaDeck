@@ -30,6 +30,7 @@ int plat_write_file(const char *path, const void *d, int len)
 static char rp[256];
 const char *plat_res(const char *n) { snprintf(rp, sizeof rp, "res/%s", n); return rp; }
 const char *plat_state_path(void) { return "/tmp/vl_state.txt"; }
+const char *plat_playtime_path(void) { return "/tmp/vl_playtime.txt"; }
 const char *plat_legacy_state_path(void) { return NULL; }
 
 static const struct { const char *id, *t; int c; const char *icon; } DEMO[] = {
@@ -66,6 +67,8 @@ static int host_plug, host_as = 1, host_ret = 1;
 int plat_plugin_state(char *p, int n) { snprintf(p, n, "ur0:tai/config.txt"); return host_plug; }
 int plat_plugin_install(void) { host_plug = PLUG_INSTALLED; return 0; }
 int plat_plugin_uninstall(void) { host_plug = PLUG_NONE; return 0; }
+int plat_plugin_update(void) { return 0; }
+int plat_plugin_outdated(void) { return 0; }
 void plat_plugin_cfg_load(int *a, int *r) { *a = host_as; *r = host_ret; }
 int plat_plugin_cfg_save(int a, int r) { host_as = a; host_ret = r; return 0; }
 int plat_net_begin(char *err, int n) { snprintf(err, n, "not available on the host build"); return -1; }

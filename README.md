@@ -15,9 +15,9 @@ Fonts: Lato (UI) and Lexend (wordmark), both under the SIL Open Font License (`r
 | | |
 |---|---|
 | ![Home screen with box art](docs/screenshots/startseite.png) | ![Home screen, Vita games row](docs/screenshots/startseite-reihen.png) |
-| Home: box art in the hero, blurred background from the cover | Portrait box art tiles, rows by category |
+| Home: box art in the hero, blurred background from the cover, **playtime** | Portrait box art tiles, rows by category |
 | ![Library](docs/screenshots/bibliothek.png) | ![App options](docs/screenshots/optionen.png) |
-| Library: box art, apps without a cover show their icon | Options (△): favourite, hide |
+| Library sorted by **playtime**; apps without a cover show their icon | Options (△): favourite, hide |
 | ![Settings](docs/screenshots/einstellungen.png) | ![Quick access](docs/screenshots/schnellzugriff.png) |
 | Settings: return plugin and **cover download** | Quick access (SELECT) |
 
@@ -60,17 +60,20 @@ Touch: tap a tile to select it, tap again to start. The button hints in the foot
   [HexFlow-Covers](https://github.com/andiweli/hexflow-covers) (the database also used by HexFlow and RetroFlow) to
   `ux0:data/VitaDeck/covers/box/<TITLE-ID>.png`; existing files are kept, so you can also put your own 250×320 PNGs there.
   Wi-Fi is required. Apps without box art show their icon. Images are decoded on a background thread and preloaded while the UI is idle.
-- Library with categories and sorting (A–Z / recently played, via △ options)
+- Library with categories and sorting (A–Z / recently played / playtime, via △ options)
 - Hide apps: △ → "Ausblenden"; hidden apps appear in the library tab "Ausgeblendet" (only shown when not empty) and can be restored there via △ → "Einblenden"
 - Launches via `sceAppMgrLaunchAppByUri("psgm:play?titleid=…")`; the launcher exits while the game runs. If a launch fails, VitaDeck stays open and shows the error code.
 - Main menu: home, library, reload app list, settings, standby, restart, quit launcher
-- Quick access: brightness, volume (system-wide via SceAVConfig), battery, render-time diagnostics
+- Quick access: brightness (kept in sync with the system setting), volume (system-wide via SceAVConfig), battery, render-time diagnostics
 - **Return plugin** (Settings → "Rückkehr-Plugin" → install): a small taiHEN user plugin for the system shell.
   It starts VitaDeck after boot and reopens it when a game started from VitaDeck is closed
   (games started from the LiveArea are left alone). Both can be switched off separately; the return switch applies immediately, autostart on the next boot.
   Installing copies `vdreturn.suprx` to `ur0:tai/` and adds it under `*main` in the config.txt taiHEN uses (backup: `config.txt.vitadeck.bak`).
   Escape hatches: hold SELECT while powering on = no autostart; hold L while powering on = taiHEN loads no plugins at all.
   Log: `ux0:data/VitaDeck/plugin.log`.
+- **Playtime** (needs the return plugin): the plugin times every app you run, also games started from the LiveArea, and
+  appends the minutes to `ux0:data/VitaDeck/playtime.txt`; the hero shows "Gespielt: 12 Std." and the library can sort by it.
+  VitaDeck keeps an installed plugin up to date and shows in the settings when a reboot is needed to load the new version.
   > **Note:** installing the plugin edits your taiHEN `config.txt`. VitaDeck asks first, keeps a backup next to it and verifies the result, but as with any plugin: if something goes wrong, boot while holding L and restore `config.txt` from `config.txt.vitadeck.bak` in VitaShell. The plugin is optional – VitaDeck works without it.
 
 ## What's new in v0.4

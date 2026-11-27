@@ -55,6 +55,10 @@ enum { PLUG_NONE = 0, PLUG_INSTALLED = 1, PLUG_OTHER_PATH = 2 };
 int plat_plugin_state(char *cfg_path, int n);   /* which config.txt taiHEN uses + PLUG_* */
 int plat_plugin_install(void);                  /* 0 ok, <0 error */
 int plat_plugin_uninstall(void);
+int plat_plugin_update(void);                   /* replace an outdated installed copy; 1 = updated */
+int plat_plugin_outdated(void);                 /* installed, but SceShell still runs an older version (reboot) */
+/* "TITLEID seconds" lines appended by the plugin, summed and compacted by ui.c */
+const char *plat_playtime_path(void);
 void plat_plugin_cfg_load(int *autostart, int *ret);
 int plat_plugin_cfg_save(int autostart, int ret);
 

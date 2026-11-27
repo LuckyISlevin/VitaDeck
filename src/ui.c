@@ -51,6 +51,7 @@ typedef struct {
 	int fav;
 	int hidden;        /* hidden from home and library (except the "Ausgeblendet" tab) */
 	int last;          /* minutes since civil epoch, 0 = never */
+	unsigned play;     /* playtime in seconds (from the plugin's playtime.txt) */
 	Img *ic, *ics;     /* hero (128) and tile (112) icon */
 	Img *cv, *cvs;     /* cached placeholder cover, 128 and 112 */
 	int ic_state;      /* 0 = pending, 1 = ok, 2 = none */
@@ -73,7 +74,8 @@ static int lists_dirty = 1;
 static const char *TABS[] = { "Alle", "Vita", "Homebrew", "Emulatoren", "Favoriten", "Ausgeblendet" };
 #define TAB_HIDDEN 5
 static int ntabs(void);   /* 6 while any app is hidden, else 5 */
-static const char *SORTS[] = { "A–Z", "Zuletzt gestartet" };
+static const char *SORTS[] = { "A–Z", "Zuletzt gestartet", "Spielzeit" };
+#define NSORTS 3
 
 enum { V_BOOT, V_HOME, V_LIB };
 enum { OV_NONE, OV_MENU, OV_QA, OV_CTX, OV_LAUNCH, OV_SET, OV_CONFIRM };
@@ -91,7 +93,7 @@ static struct {
 	int dirty;
 	float sy, sx[5], ly;  /* animated scroll */
 	int last_minute;
-	int si, set_as, set_ret, plug, confirm;   /* settings overlay */
+	int si, set_as, set_ret, plug, plug_old, confirm;   /* settings overlay */
 	char plug_cfg[32];
 	unsigned perf_us;     /* smoothed time to render a full screen (no overlay cache) */
 	unsigned perf_sec[4]; /* home screen breakdown: header, hero, tiles, footer */
@@ -138,6 +140,19 @@ static void fmt_last(int last, char *out, int n)
 	else snprintf(out, n, "vor %d Tagen", diff);
 }
 
+/* "45 Min.", "2,5 Std.", "12 Std." */
+static void fmt_play(unsigned sec, char *out, int n)
+{
+	unsigned min = sec / 60;
+	if (min == 0) snprintf(out, n, "unter 1 Min.");
+	else if (min < 60) snprintf(out, n, "%u Min.", min);
+	else if (min < 600) {
+		unsigned t = (min + 3) / 6;   /* tenths of an hour, rounded */
+		if (t % 10) snprintf(out, n, "%u,%u Std.", t / 10, t % 10);
+		else snprintf(out, n, "%u Std.", t / 10);
+	} else snprintf(out, n, "%u Std.", (min + 30) / 60);
+}
+
 static const char *cat_name(int c)
 {
 	return c == CAT_VITA ? "Vita" : c == CAT_EMU ? "Emulator" : "Homebrew";
@@ -175,6 +190,47 @@ static void load_state(void)
 	free(s);
 }
 
+/* playtime.txt: the plugin appends "TITLEID seconds" (one line per minute played
+   and per session end). Sum per app; once the file has grown, rewrite it with
+   one line per title – also for titles that are not installed right now. */
+#define PLAY_COMPACT_BYTES 16384
+static void load_playtime(void)
+{
+	for (int i = 0; i < napps; i++) apps[i].play = 0;
+	unsigned char *d; int len;
+	if (plat_read_file(plat_playtime_path(), &d, &len) < 0) return;
+	char *s = malloc(len + 1);
+	if (!s) { free(d); return; }
+	memcpy(s, d, len); s[len] = 0; free(d);
+	int cap = 64, nt = 0, lines = 0;
+	struct pt { char id[16]; unsigned sec; } *t = malloc(cap * sizeof *t);
+	for (char *line = strtok(s, "\n"); line && t; line = strtok(NULL, "\n")) {
+		char id[16]; unsigned sec;
+		if (sscanf(line, "%15s %u", id, &sec) != 2 || strlen(id) != 9) continue;
+		lines++;
+		int k = 0;
+		while (k < nt && strcmp(t[k].id, id)) k++;
+		if (k == nt) {
+			if (nt == cap) { void *nt2 = realloc(t, (cap *= 2) * sizeof *t); if (!nt2) break; t = nt2; }
+			snprintf(t[nt].id, sizeof t[nt].id, "%s", id); t[nt].sec = 0; nt++;
+		}
+		t[k].sec += sec;
+	}
+	free(s);
+	if (!t) return;
+	for (int k = 0; k < nt; k++) { App *a = find_app(t[k].id); if (a) a->play = t[k].sec; }
+	if (len > PLAY_COMPACT_BYTES && lines > nt) {
+		char *o = malloc(nt * 24 + 1);
+		if (o) {
+			int n = 0;
+			for (int k = 0; k < nt; k++) n += sprintf(o + n, "%s %u\n", t[k].id, t[k].sec);
+			plat_write_file(plat_playtime_path(), o, n);
+			free(o);
+		}
+	}
+	free(t);
+}
+
 static void save_state(void)
 {
 	int cap = 64 + napps * 48, n = 0;
@@ -206,6 +262,13 @@ static int cmp_last(const void *x, const void *y)
 {
 	const App *a = &apps[*(const int *)x], *b = &apps[*(const int *)y];
 	if (a->last != b->last) return b->last - a->last;
+	return ci_cmp(a->title, b->title);
+}
+
+static int cmp_play(const void *x, const void *y)
+{
+	const App *a = &apps[*(const int *)x], *b = &apps[*(const int *)y];
+	if (a->play != b->play) return a->play < b->play ? 1 : -1;
 	return ci_cmp(a->title, b->title);
 }
 
@@ -256,7 +319,7 @@ static void rebuild(void)
 	}
 	if (S.tab >= ntabs()) S.tab = 0;   /* "Ausgeblendet" vanishes once it is empty */
 	nlib = lib_filter(S.tab, lib);
-	qsort(lib, nlib, sizeof(int), S.sort ? cmp_last : cmp_title);
+	qsort(lib, nlib, sizeof(int), S.sort == 2 ? cmp_play : S.sort == 1 ? cmp_last : cmp_title);
 	if (S.hrow >= nrows) S.hrow = nrows ? nrows - 1 : 0;
 	if (nrows && S.hcol >= rows[S.hrow].n) S.hcol = rows[S.hrow].n - 1;
 	if (S.hcol < 0) S.hcol = 0;
@@ -1033,9 +1096,20 @@ static void draw_hero(int ai)
 	if (S.hrow == 0 && a->last && nrows && rows[0].title[0] == 'Z') eb = "Weiterspielen";
 	text(FONT_BOLD, FS(12), tx, y + 18, eb, rgb(C_MUTE), 255);
 	text_fit(FONT_BOLD, FS(26), tx, y + 36, w - HERO_TX - 18, a->title, rgb(C_TXT), 255);
-	char last[48], meta[160];
-	fmt_last(a->last, last, sizeof last);
-	snprintf(meta, sizeof meta, "%s%s   ·   %s   ·   %s", a->last ? "Zuletzt gestartet: " : "", a->last ? last : "Noch nie gestartet", cat_name(a->cat), a->id);
+	/* "Zuletzt gestartet" only knows launches from VitaDeck; the playtime also
+	   covers LiveArea starts, so with playtime "Noch nie gestartet" is left out */
+	char when[72], play[48] = "", meta[200];
+	if (a->last) {
+		char last[48];
+		fmt_last(a->last, last, sizeof last);
+		snprintf(when, sizeof when, "Zuletzt gestartet: %s", last);
+	} else snprintf(when, sizeof when, "%s", a->play ? "" : "Noch nie gestartet");
+	if (a->play > 0) {
+		char p[24];
+		fmt_play(a->play, p, sizeof p);
+		snprintf(play, sizeof play, "%sGespielt: %s", when[0] ? "   ·   " : "", p);
+	}
+	snprintf(meta, sizeof meta, "%s%s   ·   %s   ·   %s", when, play, cat_name(a->cat), a->id);
 	text_fit(FONT_REG, FS(13), tx, y + 76, w - HERO_TX - 18, meta, rgb(C_TXT2), 255);
 	int by = y + 106;
 	gfx_rrect(tx, by, 136, 36, 8, rgb(C_ACC), 255);
@@ -1154,9 +1228,11 @@ static void draw_lib(void)
 	char info[200] = { 0 };
 	int ai = lib_app();
 	if (ai >= 0) {
-		char last[48];
-		fmt_last(apps[ai].last, last, sizeof last);
-		snprintf(info, sizeof info, "%s · %s · %s%s", apps[ai].title, cat_name(apps[ai].cat), apps[ai].last ? "zuletzt " : "", last);
+		const App *a = &apps[ai];
+		char last[48] = "", play[40] = "";
+		if (a->last || !a->play) fmt_last(a->last, last, sizeof last);   /* "noch nie gestartet" only without playtime */
+		if (a->play) { char p[24]; fmt_play(a->play, p, sizeof p); snprintf(play, sizeof play, "%s%s gespielt", last[0] ? " · " : "", p); }
+		snprintf(info, sizeof info, "%s · %s · %s%s%s", a->title, cat_name(a->cat), a->last ? "zuletzt " : "", last, play);
 	}
 	Hint hs[] = { { G_X, "Starten" }, { G_SQ, "Favorit" }, { G_TRI, "Optionen" }, { G_O, "Zurück" } };
 	footer(ai >= 0 ? info : NULL, hs, 4);
@@ -1299,6 +1375,7 @@ static void settings_open(void)
 {
 	plat_plugin_cfg_load(&S.set_as, &S.set_ret);
 	S.plug = plat_plugin_state(S.plug_cfg, sizeof S.plug_cfg);
+	S.plug_old = plat_plugin_outdated();
 	if (cov.state != 1) cov_have_now = count_covers();
 	S.si = 0;
 	S.ov = OV_SET;
@@ -1349,11 +1426,12 @@ static void draw_set(void)
 				text(FONT_BOLD, FS(13), SET_W - 32 - aw + 14, y + 23, act, rgb(C_INK), 255);
 			}
 		} else {
-			const char *st = S.plug == PLUG_INSTALLED ? "installiert" :
+			const char *st = S.plug == PLUG_INSTALLED ? (S.plug_old ? "installiert · Neustart der Vita nötig" : "installiert") :
 			                 S.plug == PLUG_OTHER_PATH ? "eingetragen (anderer Pfad)" : "nicht installiert";
 			char b[96];
 			snprintf(b, sizeof b, "Status: %s", st);
-			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 170, b, rgb(S.plug == PLUG_INSTALLED ? C_GREEN : C_MUTE), 255);
+			u32 sc = S.plug != PLUG_INSTALLED ? rgb(C_MUTE) : S.plug_old ? rgb(0xffd166) : rgb(C_GREEN);
+			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 170, b, sc, 255);
 			const char *act = S.plug == PLUG_INSTALLED ? "Entfernen" : "Installieren";
 			int aw = text_w(FONT_BOLD, FS(13), act) + 28;
 			gfx_rrect(SET_W - 32 - aw, y + 16, aw, 32, 8, rgb(S.plug == PLUG_INSTALLED ? C_BTN : C_ACC), 255);
@@ -1363,7 +1441,7 @@ static void draw_set(void)
 		y += h + 10;
 	}
 	/* the switches only do something once the plugin is loaded */
-	const char *note = S.plug == PLUG_NONE ? "Die Schalter wirken erst mit installiertem Plugin."
+	const char *note = S.plug == PLUG_NONE ? "Schalter und Spielzeit-Erfassung wirken erst mit installiertem Plugin."
 	                                       : "Plugin-Änderungen wirken nach einem Neustart der Vita.";
 	text(FONT_REG, FS(11), 22, y + 4, note, rgb(C_TXT2), 255);
 	text(FONT_REG, FS(11), 22, y + 24, "Notausgang beim Einschalten: SELECT = kein Autostart, L = keine Plugins", rgb(C_MUTE), 255);
@@ -1418,6 +1496,7 @@ static void confirm_act(void)
 	int inst = S.confirm == CF_INSTALL;
 	int r = inst ? plat_plugin_install() : plat_plugin_uninstall();
 	S.plug = plat_plugin_state(S.plug_cfg, sizeof S.plug_cfg);
+	S.plug_old = plat_plugin_outdated();
 	S.ov = OV_SET;
 	char m[96];
 	if (r == 0) snprintf(m, sizeof m, inst ? "Plugin installiert · wirkt nach Neustart" : "Plugin entfernt · wirkt nach Neustart");
@@ -1500,7 +1579,11 @@ static int ctx_items(const App *a, const char *out[], int act[])
 	out[n] = a->fav ? "Aus Favoriten entfernen" : "Zu Favoriten hinzufügen"; act[n++] = CA_FAV;
 	if (a->last && !a->hidden) { out[n] = "Aus „Zuletzt gestartet“ entfernen"; act[n++] = CA_UNRECENT; }
 	out[n] = a->hidden ? "Einblenden" : "Ausblenden"; act[n++] = CA_HIDE;
-	if (S.view == V_LIB) { out[n] = S.sort ? "Sortieren: A–Z" : "Sortieren: Zuletzt gestartet"; act[n++] = CA_SORT; }
+	if (S.view == V_LIB) {
+		static char sl[48];
+		snprintf(sl, sizeof sl, "Sortieren: %s", SORTS[(S.sort + 1) % NSORTS]);
+		out[n] = sl; act[n++] = CA_SORT;
+	}
 	return n;
 }
 
@@ -1639,12 +1722,19 @@ void ui_scan(void)
 	free(pa);
 	icon_cursor = 0;
 	load_state();
+	load_playtime();
 	/* brightness: the system setting wins (it may have been changed in the PS
 	   button menu since); only if it can't be read, apply VitaDeck's saved value */
 	int sb = plat_get_brightness();
 	if (sb >= 0) { S.bright = sb < 10 ? 10 : sb; S.bright_ok = 1; }
 	else S.bright_ok = plat_set_brightness(S.bright) >= 0;
 	art_boot_load();   /* cached covers right away – no PNG decoding at startup */
+	static int plug_checked;   /* once per start: bring an installed plugin up to date */
+	if (!plug_checked) {
+		plug_checked = 1;
+		if (plat_plugin_update() == 1) toast("Rückkehr-Plugin aktualisiert · wirkt nach Neustart");
+		else if (plat_plugin_outdated()) toast("Neues Rückkehr-Plugin läuft erst nach einem Neustart der Vita");
+	}
 	rebuild();
 }
 
@@ -1680,7 +1770,7 @@ static void qa_adjust(int d)
 
 static void lib_toggle_sort(int keep_app)
 {
-	S.sort = !S.sort;
+	S.sort = (S.sort + 1) % NSORTS;
 	rebuild();
 	for (int i = 0; i < nlib; i++) if (lib[i] == keep_app) S.lidx = i;
 	char m[64];

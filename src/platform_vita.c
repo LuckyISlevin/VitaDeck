@@ -1,5 +1,6 @@
 /* PS Vita platform layer: display, input, file IO, app scan, launching. */
 #include "platform.h"
+#include "../plugin/version.h"
 #include <psp2/display.h>
 #include <psp2/ctrl.h>
 #include <psp2/touch.h>
@@ -101,6 +102,7 @@ int plat_write_file(const char *path, const void *d, int len)
 static char resbuf[128];
 const char *plat_res(const char *name) { snprintf(resbuf, sizeof resbuf, "app0:res/%s", name); return resbuf; }
 const char *plat_state_path(void) { return "ux0:data/VitaDeck/state.txt"; }
+const char *plat_playtime_path(void) { return "ux0:data/VitaDeck/playtime.txt"; }
 const char *plat_legacy_state_path(void) { return "ux0:data/VitaLauncher/state.txt"; }
 
 static int file_exists(const char *p)
@@ -389,6 +391,37 @@ int plat_plugin_install(void)
 	free(d);
 	if (r < 0) return -6;
 	return plugin_write_config(1);
+}
+
+/* The plugin writes its version when SceShell loads it (plugin/version.h).
+   Installed but not running at the bundled version = a reboot is still needed. */
+int plat_plugin_outdated(void)
+{
+	char cfg[64];
+	if (plat_plugin_state(cfg, sizeof cfg) != PLUG_INSTALLED) return 0;
+	unsigned char *d; int len, v = 0;
+	if (plat_read_file(PLUGIN_VER_FILE, &d, &len) >= 0) {
+		char b[16] = { 0 };
+		memcpy(b, d, len < 15 ? len : 15);
+		v = atoi(b);
+		free(d);
+	}
+	return v != PLUGIN_VERSION;
+}
+
+/* An installed plugin from an older VitaDeck is replaced by the bundled one
+   (SceShell keeps running the old copy until the next reboot). 1 = updated. */
+int plat_plugin_update(void)
+{
+	char cfg[64];
+	if (plat_plugin_state(cfg, sizeof cfg) != PLUG_INSTALLED) return 0;
+	unsigned char *src, *dst; int ls, ld;
+	if (plat_read_file(PLUG_SRC, &src, &ls) < 0) return 0;
+	int differ = 1;
+	if (plat_read_file(PLUG_DST, &dst, &ld) >= 0) { differ = ld != ls || memcmp(src, dst, ls); free(dst); }
+	int r = differ ? plat_write_file(PLUG_DST, src, ls) : -1;
+	free(src);
+	return differ && r == 0;
 }
 
 int plat_plugin_uninstall(void)

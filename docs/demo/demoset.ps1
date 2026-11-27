@@ -48,6 +48,12 @@ $st = @(
 ) -join "`n"
 New-Item -ItemType Directory -Force "$v\ux0\data\VitaDeck" | Out-Null
 [IO.File]::WriteAllText("$v\ux0\data\VitaDeck\state.txt", $st + "`n", (New-Object Text.UTF8Encoding($false)))
+# playtime as the plugin would have logged it ("TITLEID seconds", several lines per title are summed)
+$pt = @("PCSG90106 30000", "PCSB90101 4800", "PCSE90102 9000", "PCSF90104 140000", "PCSE90105 2700", "PCSG90106 15000") -join "`n"
+[IO.File]::WriteAllText("$v\ux0\data\VitaDeck\playtime.txt", $pt + "`n", (New-Object Text.UTF8Encoding($false)))
+# the running plugin's version (plugin/version.h), so the settings do not ask for a reboot
+$ver = [regex]::Match((Get-Content -Raw "$(Split-Path (Split-Path $PSScriptRoot))\plugin\version.h"), 'PLUGIN_VERSION\s+(\d+)').Groups[1].Value
+[IO.File]::WriteAllText("$v\ux0\data\VitaDeck\plugin.ver", "$ver`n", (New-Object Text.UTF8Encoding($false)))
 # settings screen: plugin "installed" (Vita3K only)
 New-Item -ItemType Directory -Force "$v\ur0\tai" | Out-Null
 [IO.File]::WriteAllText("$v\ur0\tai\config.txt", "*KERNEL`n*main`nur0:tai/vdreturn.suprx`n", (New-Object Text.UTF8Encoding($false)))

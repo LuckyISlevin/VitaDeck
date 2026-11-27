@@ -9,6 +9,10 @@
  *   3. after a short pause, if no other (non-system) app took over,
  *      deletes the marker and starts VitaDeck.
  * Games started from the LiveArea have no marker and are left alone.
+ * Playtime: every running non-system app (except VitaDeck) is timed, also
+ * when started from the LiveArea; "TITLEID seconds" lines are appended to
+ * ux0:data/VitaDeck/playtime.txt every minute and when the app ends.
+ * VitaDeck adds them up (and compacts the file).
  * Everything is logged to ux0:data/VitaDeck/plugin.log.
  *
  * Runs inside the system shell, so: no newlib, no malloc, only Sce* calls,
@@ -23,6 +27,7 @@
 #include <psp2/appmgr.h>
 #include <psp2/ctrl.h>
 #include <stdarg.h>
+#include "version.h"
 
 #define LOG_PATH  "ux0:data/VitaDeck/plugin.log"
 #define LOG_OLD   "ux0:data/VitaDeck/plugin.old.log"
@@ -189,6 +194,61 @@ static void launch_vitadeck(void)
 	log_line(wait_running(4000) ? "VitaDeck is running" : "VitaDeck did not start");
 }
 
+/* ---- playtime ---- */
+#define PLAYTIME     "ux0:data/VitaDeck/playtime.txt"
+#define PLAY_SLOTS   4
+#define PLAY_FLUSH_MS 60000   /* write at least once a minute (crash / battery dead) */
+#define PLAY_GAP_MS   5000    /* a longer gap between polls = standby, not counted */
+
+typedef struct { char id[16]; unsigned ms; int used, seen; } PlaySlot;
+static PlaySlot g_play[PLAY_SLOTS];
+
+static void play_flush(PlaySlot *s)
+{
+	unsigned sec = s->ms / 1000;
+	if (!sec) return;
+	s->ms -= sec * 1000;
+	char b[40];
+	int n = sceClibSnprintf(b, sizeof b, "%s %u\n", s->id, sec);
+	if (n <= 0) return;
+	SceUID fd = sceIoOpen(PLAYTIME, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0666);
+	if (fd < 0) { log_line("playtime: open failed 0x%08X", (unsigned)fd); return; }
+	sceIoWrite(fd, b, n);
+	sceIoClose(fd);
+}
+
+/* called once per poll with the current snapshot and the time since the last poll */
+static void play_update(const RunApp *cur, int n, unsigned dt)
+{
+	if (dt > PLAY_GAP_MS) dt = 0;
+	for (int k = 0; k < PLAY_SLOTS; k++) g_play[k].seen = 0;
+	for (int i = 0; i < n; i++) {
+		const char *id = cur[i].name;
+		if (is_system(id) || !sceClibStrncmp(id, SELF_ID, 16) || id[0] == '?' || !id[0]) continue;
+		PlaySlot *s = NULL;
+		for (int k = 0; k < PLAY_SLOTS && !s; k++)
+			if (g_play[k].used && !sceClibStrncmp(g_play[k].id, id, 16)) s = &g_play[k];
+		if (!s) {
+			for (int k = 0; k < PLAY_SLOTS && !s; k++) if (!g_play[k].used) s = &g_play[k];
+			if (!s) continue;
+			sceClibMemset(s, 0, sizeof *s);
+			sceClibStrncpy(s->id, id, sizeof s->id - 1);
+			s->used = 1;
+			log_line("playtime: %s started", s->id);
+		} else {
+			s->ms += dt;
+		}
+		s->seen = 1;
+		if (s->ms >= PLAY_FLUSH_MS) play_flush(s);
+	}
+	for (int k = 0; k < PLAY_SLOTS; k++)
+		if (g_play[k].used && !g_play[k].seen) {
+			play_flush(&g_play[k]);
+			log_line("playtime: %s ended", g_play[k].id);
+			g_play[k].used = 0;
+		}
+}
+
 enum { ST_IDLE, ST_WAIT_START, ST_RUNNING, ST_ENDED };
 
 static int worker(SceSize args, void *argp)
@@ -201,7 +261,7 @@ static int worker(SceSize args, void *argp)
 	int r = sceCtrlPeekBufferPositive(0, &pad, 1);
 	Settings cfg = read_settings();
 	int skip = r > 0 && (pad.buttons & SCE_CTRL_SELECT);
-	log_line("Plugin started. autostart=%d return=%d, buttons at start: 0x%08X%s",
+	log_line("Plugin v%d started. autostart=%d return=%d, buttons at start: 0x%08X%s", PLUGIN_VERSION,
 	         cfg.autostart, cfg.ret, (unsigned)pad.buttons, skip ? " (SELECT: autostart skipped)" : "");
 
 	RunApp prev[MAX_APPS], cur[MAX_APPS];
@@ -229,6 +289,9 @@ static int worker(SceSize args, void *argp)
 		}
 
 		unsigned t = now_ms();
+		static unsigned t_play;
+		if (n >= 0) play_update(cur, n, t_play ? t - t_play : 0);
+		t_play = t;
 
 		/* autostart (once per boot) */
 		if (as_pending && select_held()) {
@@ -293,6 +356,7 @@ static int worker(SceSize args, void *argp)
 		}
 		sceKernelDelayThread(POLL_US);
 	}
+	for (int k = 0; k < PLAY_SLOTS; k++) if (g_play[k].used) play_flush(&g_play[k]);
 	log_line("Plugin stopped");
 	return 0;
 }
@@ -305,6 +369,14 @@ int module_start(SceSize args, void *argp)
 	sceIoRemove(LOG_OLD);
 	sceIoRename(LOG_PATH, LOG_OLD);
 	g_log_bytes = 0;
+	/* tell VitaDeck which plugin version SceShell is actually running */
+	SceUID vf = sceIoOpen(PLUGIN_VER_FILE, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+	if (vf >= 0) {
+		char vb[16];
+		int vn = sceClibSnprintf(vb, sizeof vb, "%d\n", PLUGIN_VERSION);
+		if (vn > 0) sceIoWrite(vf, vb, vn);
+		sceIoClose(vf);
+	}
 
 	g_thread = sceKernelCreateThread("vdreturn", worker, 191, 0x4000, 0, 0, NULL);
 	if (g_thread >= 0 && sceKernelStartThread(g_thread, 0, NULL) < 0) {

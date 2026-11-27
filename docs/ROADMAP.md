@@ -1,7 +1,7 @@
 # VitaDeck – Feature ideas
 
 As of 2026-11-27, after v0.4. Sorted by value relative to effort.
-**Planned order for the next round: 5 → 6** (1 is done).
+**Next: 6** (1 and 5 are done).
 
 ## Small but noticeable
 2. **"Always return to VitaDeck"** as a third switch in the settings – the plugin sees every game, so VitaDeck could also come back after games started from the LiveArea (replacement home screen). New key in `plugin.txt`.
@@ -10,7 +10,6 @@ As of 2026-11-27, after v0.4. Sorted by value relative to effort.
 13. **Airplane mode in the main menu (START)** – toggle entry next to standby/restart. *Research first:* which registry key / system call switches airplane mode (and whether the shell picks up the change without a restart).
 
 ## Medium effort, high value
-5. **Playtime tracking** – the plugin already sees every game start and end; it writes the times to a file (e.g. `ux0:data/VitaDeck/playtime.txt`), VitaDeck shows "Gespielt: 12 Std." in the hero, plus sorting by playtime.
 6. **Swipe scrolling on the touch screen** – scroll rows and the library with a finger; today only taps work (`ui_frame`: `touch_moved` is only used to discard taps).
 7. **Recognise PSP/PS1 bubbles** – Adrenaline bubbles currently end up under "Homebrew"; use the category in `param.sfo` to show them as their own "PSP" row (no launching of ISOs by VitaDeck itself).
 8. **Home screen background from the hero image** – blurred and darkened over the whole screen, cached like the header/hero.
@@ -27,3 +26,4 @@ As of 2026-11-27, after v0.4. Sorted by value relative to effort.
 - Hero backgrounds, hiding apps, performance (~12 ms per frame), logo, screenshots
 - v0.4: box art download, portrait tiles, art cache, logo "3E · Lexend"
 - 1. Brightness: the system setting (registry `/CONFIG/DISPLAY/brightness`) is read at startup and written back on every change; VitaDeck's saved value is only applied as a fallback
+- 5. Playtime: the plugin (v2) appends "TITLEID seconds" to playtime.txt every minute and at the end of a session; VitaDeck sums and compacts it, shows it in the hero and sorts the library by it
