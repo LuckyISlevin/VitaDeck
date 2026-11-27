@@ -1,5 +1,6 @@
-﻿param([string]$Out, [int]$W, [int]$H, [string]$Motif, [string]$C1, [string]$C2, [string]$C3)
+﻿param([string]$Out, [int]$W, [int]$H, [string]$Motif, [string]$C1, [string]$C2, [string]$C3, [string]$Title = '')
 # Original abstract artwork for the VitaDeck demo set (no third-party assets).
+# With -Title it becomes a portrait "box art" cover with the title in a band at the bottom.
 Add-Type -AssemblyName System.Drawing
 function C([string]$hex, [int]$a = 255) { $c = [System.Drawing.ColorTranslator]::FromHtml($hex); [System.Drawing.Color]::FromArgb($a, $c.R, $c.G, $c.B) }
 $bmp = New-Object System.Drawing.Bitmap $W, $H
@@ -80,6 +81,18 @@ switch ($Motif) {
       $g.DrawEllipse((New-Object System.Drawing.Pen (C $C3 (200 - 25 * $i)), ([float](6 * $k + 2))), [float]($W * 0.6 - $r), [float]($H * 0.5 - $r), $r * 2, $r * 2)
     }
   }
+}
+if ($Title) {
+  # invented box art: darkened band at the bottom with the title, thin frame line on top
+  $bandH = [int]($H * 0.30)
+  $band = New-Object System.Drawing.Rectangle 0, ($H - $bandH), $W, $bandH
+  $g.FillRectangle((New-Object System.Drawing.Drawing2D.LinearGradientBrush $band, (C '#000000' 0), (C '#000000' 210), 90.0), $band)
+  $g.FillRectangle((New-Object System.Drawing.SolidBrush (C $C3 230)), 0, 0, $W, [int]($H * 0.025))
+  $font = New-Object System.Drawing.Font 'Segoe UI', ([float]($W / 9)), ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
+  $sf = New-Object System.Drawing.StringFormat; $sf.Alignment = 'Center'; $sf.LineAlignment = 'Center'
+  $g.TextRenderingHint = 'AntiAliasGridFit'
+  $tr = New-Object System.Drawing.RectangleF ([float]($W * 0.06)), ([float]($H - $bandH * 0.92)), ([float]($W * 0.88)), ([float]($bandH * 0.84))
+  $g.DrawString($Title.ToUpper(), $font, (New-Object System.Drawing.SolidBrush (C '#ffffff')), $tr, $sf)
 }
 $g.Dispose()
 New-Item -ItemType Directory -Force (Split-Path $Out) | Out-Null

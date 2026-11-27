@@ -39,13 +39,16 @@ const char *plat_res(const char *name);
 const char *plat_state_path(void);
 const char *plat_legacy_state_path(void);  /* may return NULL */
 int plat_scan_apps(PlatApp **out);
-/* candidate files for an app's background picture, best first; returns count */
-int plat_bg_paths(const char *id, char out[][128], int max);
+/* folder with downloaded / own box art: <dir>/<TITLEID>.png */
+const char *plat_cover_dir(void);
+int plat_file_exists(const char *path);
+int plat_file_size(const char *path);   /* bytes, <0 if missing */
+int plat_mkdir(const char *path);
 /* run job(arg) on a background worker (one at a time; host: synchronously).
    Returns 0 if started, <0 if the worker is still busy. */
 int plat_job(void (*job)(void *), void *arg);
 int plat_job_threaded(void);   /* 1 if jobs really run on a separate thread */
-int plat_launch(const char *id);
+int plat_launch(const char *id);   /* <0 = SCE error code; on success the Vita process exits */
 
 /* return/autostart plugin (plugin/vdreturn.c) */
 enum { PLUG_NONE = 0, PLUG_INSTALLED = 1, PLUG_OTHER_PATH = 2 };
@@ -55,10 +58,11 @@ int plat_plugin_uninstall(void);
 void plat_plugin_cfg_load(int *autostart, int *ret);
 int plat_plugin_cfg_save(int autostart, int ret);
 
-/* network probe (cover download, step 1): downloads one cover over HTTPS,
-   logs every step to ux0:data/VitaDeck/net.log and writes a one-line
-   summary. Blocking – run it via plat_job. Returns 0 if the download worked. */
-int plat_net_test(char *summary, int n);   /* <0 = SCE error code; on success the Vita process exits */
+/* HTTPS downloads (libcurl + mbedTLS, certificate checks on). Blocking –
+   call only from a job. Every request is logged to ux0:data/VitaDeck/net.log. */
+int plat_net_begin(char *err, int n);                    /* 0 ok, <0 (e.g. no Wi-Fi) with message */
+int plat_http_download(const char *url, const char *path); /* 0 saved, 1 = 404, <0 error */
+void plat_net_end(void);
 int plat_set_brightness(int pct);
 int plat_get_volume(void);      /* 0..30, <0 = unavailable */
 int plat_set_volume(int v);

@@ -56,15 +56,10 @@ int plat_scan_apps(PlatApp **out)
 	}
 	return n;
 }
-int plat_bg_paths(const char *id, char out[][128], int max)
-{
-	if (max < 1) return 0;
-	snprintf(out[0], 128, "/tmp/vlbg/%s.png", id);
-	FILE *f = fopen(out[0], "rb");
-	if (!f) return 0;
-	fclose(f);
-	return 1;
-}
+const char *plat_cover_dir(void) { return "/tmp/vlcovers"; }
+int plat_file_exists(const char *path) { FILE *f = fopen(path, "rb"); if (!f) return 0; fclose(f); return 1; }
+int plat_file_size(const char *path) { FILE *f = fopen(path, "rb"); if (!f) return -1; fseek(f, 0, SEEK_END); long n = ftell(f); fclose(f); return (int)n; }
+int plat_mkdir(const char *path) { (void)path; return 0; }
 int plat_job(void (*job)(void *), void *arg) { job(arg); return 0; }
 int plat_job_threaded(void) { return 0; }
 static int host_plug, host_as = 1, host_ret = 1;
@@ -73,7 +68,9 @@ int plat_plugin_install(void) { host_plug = PLUG_INSTALLED; return 0; }
 int plat_plugin_uninstall(void) { host_plug = PLUG_NONE; return 0; }
 void plat_plugin_cfg_load(int *a, int *r) { *a = host_as; *r = host_ret; }
 int plat_plugin_cfg_save(int a, int r) { host_as = a; host_ret = r; return 0; }
-int plat_net_test(char *s, int n) { snprintf(s, n, "not available on the host build"); return -1; }
+int plat_net_begin(char *err, int n) { snprintf(err, n, "not available on the host build"); return -1; }
+int plat_http_download(const char *url, const char *path) { (void)url; (void)path; return -1; }
+void plat_net_end(void) {}
 int plat_launch(const char *id) { printf("launch %s\n", id); return 0; }
 int plat_set_brightness(int p) { (void)p; return 0; }
 int plat_get_volume(void) { return 18; }

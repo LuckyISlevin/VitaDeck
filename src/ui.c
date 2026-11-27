@@ -31,12 +31,15 @@
 /* UI font size: +2 px over the original layout sizes (chip labels <= 10 px stay) */
 #define FS(n) ((n) <= 10 ? (n) : (n) + 2)
 
-#define TILE      112
+#define TILE      112   /* tile width = square icon size */
+#define TILE_H    143   /* portrait tiles: box art is 250x320 */
 #define HOME_PX   128   /* tile pitch on home rows */
-#define ROW_H     178
+#define ROW_H     205
 #define LIB_COLS  7
 #define LIB_PX    133
-#define LIB_PY    160
+#define LIB_PY    190
+#define HBOX_W    150   /* box art in the hero */
+#define HBOX_H    192
 #define MAXA      512
 
 /* ---------- data ---------- */
@@ -51,7 +54,9 @@ typedef struct {
 	Img *ic, *ics;     /* hero (128) and tile (112) icon */
 	Img *cv, *cvs;     /* cached placeholder cover, 128 and 112 */
 	int ic_state;      /* 0 = pending, 1 = ok, 2 = none */
-	Img *bg;           /* hero background (HERO_W x HERO_H, darkened, opaque) */
+	Img *bg;           /* hero background (HERO_W x HERO_H, blurred + darkened, opaque) */
+	Img *box, *boxh;   /* box art: tile (TILE x TILE_H) and hero (HBOX_W x HBOX_H), opaque */
+	Img *bgs;          /* small blurred background (BGS_W x BGS_H), source of bg and of the cache */
 	int bg_state;      /* 0 = not tried, 1 = loaded, 2 = none */
 	unsigned bg_tick;  /* last use, for evicting old backgrounds */
 } App;
@@ -304,19 +309,24 @@ static void load_icon(App *a)
 	a->ic_state = 1;
 }
 
-/* ---------- hero backgrounds (pic0 / LiveArea / own covers) ----------
-   Decoding a 960x544 PNG takes tens of ms on the Vita, so it runs on the
-   background worker. The worker only touches `bgjob`, never `apps`. */
+/* ---------- box art + hero backgrounds ----------
+   Box art lives in <plat_cover_dir()>/<TITLEID>.png – downloaded from
+   HexFlow-Covers (Einstellungen → Cover laden) or put there by the user.
+   The job thread decodes it and builds three opaque images: the portrait
+   tile, the hero cover and a blurred, darkened hero background. Apps without
+   box art get the background from their icon. The worker only touches
+   `bgjob` and must not call gfx_* (global state) – everything here is
+   plain pixel code. */
 #define HERO_W  912
-#define HERO_H  208
-#define BG_KEEP 64         /* backgrounds kept in memory (~760 KB each) */
+#define HERO_H  214   /* home rows below show only the next category headline */
+#define BG_KEEP 64         /* apps whose images stay in memory (~940 KB each) */
 
 static struct {
 	volatile int state;    /* 0 idle, 1 running, 2 done */
 	char id[16];
-	char paths[8][128];
-	int npaths;
-	Img *out;
+	char icon[128];        /* fallback source for the background */
+	Img *bg, *box, *boxh, *bgs;   /* results */
+	Img *in_small;               /* input: cached small blur (owned by the job) */
 } bgjob;
 static int bg_focus = -1, bg_ok, bg_bad, bg_none, bg_cursor, bg_loaded;
 static uint64_t bg_since;
@@ -324,21 +334,80 @@ static uint64_t last_input;   /* plat_ms() of the last button/touch activity */
 static int icon_cursor;       /* icons are loaded on the UI thread, see pump_icons */
 static unsigned bg_clock;
 
-/* centre-crop to the hero aspect, scale, and darken towards the panel colour
-   (strong on the left behind the text, lighter on the right) */
-static Img *make_hero_bg(const unsigned char *rgba, int w, int h)
+/* composite onto a solid colour so the image can be blitted as plain rows */
+static void to_opaque(Img *im, u32 bgc)
 {
-	int cw = w, ch = h, cx = 0, cy = 0;
-	if (w * HERO_H > h * HERO_W) { cw = h * HERO_W / HERO_H; cx = (w - cw) / 2; }
-	else { ch = w * HERO_H / HERO_W; cy = (h - ch) * 2 / 5; }
-	if (cw < 8 || ch < 8) return NULL;
-	Img crop = { .w = cw, .h = ch, .px = malloc((size_t)cw * ch * 4) };
-	if (!crop.px) return NULL;
-	for (int j = 0; j < ch; j++)
-		memcpy(crop.px + j * cw, rgba + ((size_t)(cy + j) * w + cx) * 4, (size_t)cw * 4);
-	Img *im = img_scaled(&crop, HERO_W, HERO_H);
-	free(crop.px);
-	if (!im) return NULL;
+	if (!im) return;
+	int br = bgc & 0xFF, bg = (bgc >> 8) & 0xFF, bb = (bgc >> 16) & 0xFF;
+	for (int i = 0; i < im->w * im->h; i++) {
+		u32 c = im->px[i];
+		int a = c >> 24, ia = 255 - a;
+		int r = ((c & 0xFF) * a + br * ia) / 255;
+		int g = (((c >> 8) & 0xFF) * a + bg * ia) / 255;
+		int b = (((c >> 16) & 0xFF) * a + bb * ia) / 255;
+		im->px[i] = 0xFF000000u | (u32)b << 16 | (u32)g << 8 | (u32)r;
+	}
+	im->opaque = 1;
+}
+
+/* bilinear scaling (img_scaled only averages down / repeats pixels up) */
+static Img *scale_bilinear(const Img *s, int w, int h)
+{
+	Img *d = malloc(sizeof(Img));
+	if (!d) return NULL;
+	d->w = w; d->h = h; d->avg = s->avg; d->opaque = s->opaque;
+	d->px = malloc((size_t)w * h * 4);
+	if (!d->px) { free(d); return NULL; }
+	for (int j = 0; j < h; j++) {
+		float fy = (j + 0.5f) * s->h / h - 0.5f;
+		int y0 = fy < 0 ? 0 : (int)fy, y1 = y0 + 1 < s->h ? y0 + 1 : y0;
+		int wy = (int)((fy - y0) * 256); if (wy < 0) wy = 0;
+		for (int i = 0; i < w; i++) {
+			float fx = (i + 0.5f) * s->w / w - 0.5f;
+			int x0 = fx < 0 ? 0 : (int)fx, x1 = x0 + 1 < s->w ? x0 + 1 : x0;
+			int wx = (int)((fx - x0) * 256); if (wx < 0) wx = 0;
+			u32 a = s->px[y0 * s->w + x0], b = s->px[y0 * s->w + x1];
+			u32 c = s->px[y1 * s->w + x0], e = s->px[y1 * s->w + x1];
+			u32 o = 0;
+			for (int k = 0; k < 32; k += 8) {
+				int top = (((a >> k) & 0xFF) * (256 - wx) + ((b >> k) & 0xFF) * wx) >> 8;
+				int bot = (((c >> k) & 0xFF) * (256 - wx) + ((e >> k) & 0xFF) * wx) >> 8;
+				o |= (u32)((top * (256 - wy) + bot * wy) >> 8) << k;
+			}
+			d->px[j * w + i] = o;
+		}
+	}
+	return d;
+}
+
+/* separable box blur, radius r, in place */
+static void box_blur(Img *im, int r)
+{
+	int w = im->w, h = im->h, n = 2 * r + 1;
+	u32 *tmp = malloc((size_t)w * h * 4);
+	if (!tmp) return;
+	for (int pass = 0; pass < 2; pass++) {
+		const u32 *src = pass ? tmp : im->px;
+		u32 *dst = pass ? im->px : tmp;
+		for (int j = 0; j < h; j++)
+			for (int i = 0; i < w; i++) {
+				int s[3] = { 0, 0, 0 };
+				for (int k = -r; k <= r; k++) {
+					int x = pass ? i : i + k, y = pass ? j + k : j;
+					x = x < 0 ? 0 : x >= w ? w - 1 : x;
+					y = y < 0 ? 0 : y >= h ? h - 1 : y;
+					u32 c = src[y * w + x];
+					s[0] += c & 0xFF; s[1] += (c >> 8) & 0xFF; s[2] += (c >> 16) & 0xFF;
+				}
+				dst[j * w + i] = 0xFF000000u | (u32)(s[2] / n) << 16 | (u32)(s[1] / n) << 8 | (u32)(s[0] / n);
+			}
+	}
+	free(tmp);
+}
+
+/* darken towards the panel colour: strong on the left behind the text, lighter on the right */
+static void darken_hero(Img *im)
+{
 	u32 pc = rgb(C_PANEL);
 	int pr = pc & 0xFF, pg = (pc >> 8) & 0xFF, pb = (pc >> 16) & 0xFF;
 	static int ov[HERO_W];
@@ -346,11 +415,11 @@ static Img *make_hero_bg(const unsigned char *rgba, int w, int h)
 		float t = (float)i / (HERO_W - 1);
 		float s = t < 0.12f ? 0.f : t > 0.8f ? 1.f : (t - 0.12f) / 0.68f;
 		s = s * s * (3 - 2 * s);
-		ov[i] = (int)(238 - 120 * s);          /* panel overlay strength, 0..256 */
+		ov[i] = (int)(226 - 110 * s);          /* panel overlay strength, 0..256 */
 	}
-	for (int j = 0; j < HERO_H; j++) {
-		u32 *p = im->px + j * HERO_W;
-		for (int i = 0; i < HERO_W; i++) {
+	for (int j = 0; j < im->h; j++) {
+		u32 *p = im->px + j * im->w;
+		for (int i = 0; i < im->w && i < HERO_W; i++) {
 			u32 c = p[i];
 			int a = ov[i], ia = 256 - a;
 			int r = ((c & 0xFF) * ia + pr * a) >> 8;
@@ -360,32 +429,167 @@ static Img *make_hero_bg(const unsigned char *rgba, int w, int h)
 		}
 	}
 	im->opaque = 1;
+}
+
+/* blurred hero background, step 1: centre strip in hero aspect, shrunk to
+   BGS_W x BGS_H and blurred. This small image is what gets cached. */
+#define BGS_W (HERO_W / 8)
+#define BGS_H (HERO_H / 8)
+static Img *make_blur_small(const Img *src)
+{
+	int w = src->w, h = src->h;
+	int cw = w, ch = h, cx = 0, cy = 0;
+	if (w * HERO_H > h * HERO_W) { cw = h * HERO_W / HERO_H; cx = (w - cw) / 2; }
+	else { ch = w * HERO_H / HERO_W; cy = (h - ch) * 2 / 5; }
+	if (cw < 4 || ch < 2) return NULL;
+	Img crop = { .w = cw, .h = ch, .px = malloc((size_t)cw * ch * 4) };
+	if (!crop.px) return NULL;
+	for (int j = 0; j < ch; j++)
+		memcpy(crop.px + j * cw, src->px + (size_t)(cy + j) * w + cx, (size_t)cw * 4);
+	to_opaque(&crop, rgb(C_PANEL));
+	Img *small = img_scaled(&crop, BGS_W, BGS_H);
+	free(crop.px);
+	if (!small) return NULL;
+	box_blur(small, 2);
+	box_blur(small, 2);
+	small->opaque = 1;
+	return small;
+}
+
+/* step 2: scale the small blurred image up smoothly and darken it (a few ms) */
+static Img *bg_from_small(const Img *small)
+{
+	Img *big = small ? scale_bilinear(small, HERO_W, HERO_H) : NULL;
+	if (big) darken_hero(big);
+	return big;
+}
+
+static Img *decode_file(const char *path)
+{
+	unsigned char *d; int len;
+	if (!path[0] || plat_read_file(path, &d, &len) < 0) return NULL;
+	int w, h, n;
+	unsigned char *rgba = stbi_load_from_memory(d, len, &w, &h, &n, 4);
+	free(d);
+	if (!rgba) return NULL;
+	Img *im = img_from_rgba(rgba, w, h);
+	stbi_image_free(rgba);
 	return im;
+}
+
+static Img *img_new(int w, int h)
+{
+	Img *im = malloc(sizeof(Img));
+	if (!im) return NULL;
+	im->px = malloc((size_t)w * h * 4);
+	if (!im->px) { free(im); return NULL; }
+	im->w = w; im->h = h; im->avg = 0; im->opaque = 1;
+	return im;
+}
+
+static Img *img_dup(const Img *s)
+{
+	Img *d = s ? img_new(s->w, s->h) : NULL;
+	if (d) { memcpy(d->px, s->px, (size_t)s->w * s->h * 4); d->avg = s->avg; }
+	return d;
+}
+
+/* ---- art cache: <cover dir>/<ID>.vdc next to the PNG ----
+   Holds the finished pixels (tile, hero cover, small blurred background) so
+   VitaDeck can show every cover right at startup – also after returning from
+   a game – without decoding a single PNG. Rebuilt when the PNG's size changes. */
+#define VDC_MAGIC 0x31434456u   /* "VDC1" */
+#define VDC_TILE  (TILE * TILE_H)
+#define VDC_HERO  (HBOX_W * HBOX_H)
+#define VDC_SMALL (BGS_W * BGS_H)
+#define VDC_LEN   (8 + 4 * (VDC_TILE + VDC_HERO + VDC_SMALL))
+
+static void vdc_path(char *out, int n, const char *id) { snprintf(out, n, "%s/%s.vdc", plat_cover_dir(), id); }
+
+static int cache_load(const char *id, int png_size, Img **box, Img **boxh, Img **small)
+{
+	char p[160];
+	vdc_path(p, sizeof p, id);
+	unsigned char *d; int len;
+	if (plat_read_file(p, &d, &len) < 0) return 0;
+	uint32_t hdr[2];
+	int ok = len == VDC_LEN;
+	if (ok) { memcpy(hdr, d, 8); ok = hdr[0] == VDC_MAGIC && (int)hdr[1] == png_size; }
+	Img *b = ok ? img_new(TILE, TILE_H) : NULL, *h = ok ? img_new(HBOX_W, HBOX_H) : NULL, *s = ok ? img_new(BGS_W, BGS_H) : NULL;
+	if (!b || !h || !s) { img_free(b); img_free(h); img_free(s); free(d); return 0; }
+	const unsigned char *q = d + 8;
+	memcpy(b->px, q, 4 * VDC_TILE); q += 4 * VDC_TILE;
+	memcpy(h->px, q, 4 * VDC_HERO); q += 4 * VDC_HERO;
+	memcpy(s->px, q, 4 * VDC_SMALL);
+	free(d);
+	*box = b; *boxh = h; *small = s;
+	return 1;
+}
+
+static void cache_save(const char *id, int png_size, const Img *box, const Img *boxh, const Img *small)
+{
+	if (!box || !boxh || !small || box->w * box->h != VDC_TILE || boxh->w * boxh->h != VDC_HERO ||
+	    small->w * small->h != VDC_SMALL) return;
+	unsigned char *d = malloc(VDC_LEN);
+	if (!d) return;
+	uint32_t hdr[2] = { VDC_MAGIC, (uint32_t)png_size };
+	memcpy(d, hdr, 8);
+	unsigned char *q = d + 8;
+	memcpy(q, box->px, 4 * VDC_TILE); q += 4 * VDC_TILE;
+	memcpy(q, boxh->px, 4 * VDC_HERO); q += 4 * VDC_HERO;
+	memcpy(q, small->px, 4 * VDC_SMALL);
+	char p[160];
+	vdc_path(p, sizeof p, id);
+	plat_write_file(p, d, VDC_LEN);
+	free(d);
 }
 
 static void bg_work(void *arg)
 {
 	(void)arg;
-	Img *res = NULL;
-	/* probing the candidates runs here too: the UI thread must not touch the
-	   file system while this thread reads, or it blocks until the read is done */
-	bgjob.npaths = plat_bg_paths(bgjob.id, bgjob.paths, 8);
-	for (int i = 0; i < bgjob.npaths && !res; i++) {
-		unsigned char *d; int len;
-		if (plat_read_file(bgjob.paths[i], &d, &len) < 0) continue;
-		int w, h, n;
-		unsigned char *rgba = stbi_load_from_memory(d, len, &w, &h, &n, 4);
-		free(d);
-		if (!rgba) continue;   /* e.g. still encrypted: try the next candidate */
-		res = make_hero_bg(rgba, w, h);
-		stbi_image_free(rgba);
+	if (bgjob.in_small) {
+		/* tile + hero cover are already there (from the cache): only the big background */
+		bgjob.bg = bg_from_small(bgjob.in_small);
+		img_free(bgjob.in_small);
+		bgjob.in_small = NULL;
+	} else {
+		char path[160];
+		snprintf(path, sizeof path, "%s/%s.png", plat_cover_dir(), bgjob.id);
+		int size = plat_file_size(path);
+		Img *small = NULL;
+		if (size > 0 && cache_load(bgjob.id, size, &bgjob.box, &bgjob.boxh, &small)) {
+			/* cached */
+		} else if (size > 0) {
+			Img *cover = decode_file(path);
+			if (cover) {
+				bgjob.box = img_scaled(cover, TILE, TILE_H);
+				bgjob.boxh = img_scaled(cover, HBOX_W, HBOX_H);
+				to_opaque(bgjob.box, rgb(C_CARD));
+				to_opaque(bgjob.boxh, rgb(C_CARD));
+				small = make_blur_small(cover);
+				img_free(cover);
+				cache_save(bgjob.id, size, bgjob.box, bgjob.boxh, small);
+			}
+		}
+		if (!small) {
+			Img *ic = decode_file(bgjob.icon);   /* no box art: background from the icon */
+			if (ic) { small = make_blur_small(ic); img_free(ic); }
+		}
+		bgjob.bg = bg_from_small(small);
+		bgjob.bgs = small;
 	}
-	bgjob.out = res;
 	__sync_synchronize();
 	bgjob.state = 2;
 }
 
-/* only kicks in with more than BG_KEEP apps: drop the least recently shown */
+static void app_free_art(App *a)
+{
+	img_free(a->bg); img_free(a->box); img_free(a->boxh); img_free(a->bgs);
+	a->bg = a->box = a->boxh = a->bgs = NULL;
+}
+
+/* only kicks in with more than BG_KEEP apps: drop the big background of the
+   least recently shown app (tile, hero cover and small blur stay – cheap) */
 static void bg_trim(const App *keep)
 {
 	while (bg_loaded > BG_KEEP) {
@@ -393,7 +597,7 @@ static void bg_trim(const App *keep)
 		for (int i = 0; i < napps; i++)
 			if (apps[i].bg && &apps[i] != keep && (!old || apps[i].bg_tick < old->bg_tick)) old = &apps[i];
 		if (!old) break;
-		img_free(old->bg); old->bg = NULL; old->bg_state = 0;   /* reload when needed again */
+		img_free(old->bg); old->bg = NULL; old->bg_state = 0;   /* rebuilt from bgs when needed */
 		bg_loaded--;
 	}
 }
@@ -401,10 +605,28 @@ static void bg_trim(const App *keep)
 static void bg_start(App *a)
 {
 	snprintf(bgjob.id, sizeof bgjob.id, "%s", a->id);
-	bgjob.npaths = 0;
-	bgjob.out = NULL;
+	snprintf(bgjob.icon, sizeof bgjob.icon, "%s", a->icon_path);
+	bgjob.bg = bgjob.box = bgjob.boxh = bgjob.bgs = NULL;
+	/* a private copy: the app's own image may be freed (app list reload) while the job runs */
+	bgjob.in_small = a->bgs ? img_dup(a->bgs) : NULL;
 	bgjob.state = 1;
-	if (plat_job(bg_work, NULL) < 0) bgjob.state = 0;
+	if (plat_job(bg_work, NULL) < 0) { img_free(bgjob.in_small); bgjob.in_small = NULL; bgjob.state = 0; }
+}
+
+/* startup (during the boot splash, nothing else touches the card yet): take
+   every cached cover straight from its .vdc so the first frame already has them */
+static int art_boot_load(void)
+{
+	int n = 0;
+	for (int i = 0; i < napps; i++) {
+		App *a = &apps[i];
+		if (a->box) continue;
+		char path[160];
+		snprintf(path, sizeof path, "%s/%s.png", plat_cover_dir(), a->id);
+		int size = plat_file_size(path);
+		if (size > 0 && cache_load(a->id, size, &a->box, &a->boxh, &a->bgs)) n++;
+	}
+	return n;
 }
 
 static void pump_bg(uint64_t now)
@@ -412,18 +634,18 @@ static void pump_bg(uint64_t now)
 	if (bgjob.state == 2) {
 		__sync_synchronize();
 		App *a = find_app(bgjob.id);
-		if (a && bgjob.out && !a->bg) {
-			a->bg = bgjob.out; a->bg_state = 1; a->bg_tick = ++bg_clock;
-			bg_ok++; bg_loaded++;
+		if (a && a->bg_state != 1 && (bgjob.bg || bgjob.box)) {
+			if (bgjob.box) { img_free(a->box); a->box = bgjob.box; bgjob.box = NULL; }
+			if (bgjob.boxh) { img_free(a->boxh); a->boxh = bgjob.boxh; bgjob.boxh = NULL; }
+			if (bgjob.bgs) { img_free(a->bgs); a->bgs = bgjob.bgs; bgjob.bgs = NULL; }
+			img_free(a->bg); a->bg = bgjob.bg; bgjob.bg = NULL;
+			a->bg_state = 1; a->bg_tick = ++bg_clock;
+			if (a->box) bg_ok++; else bg_none++;
+			bg_loaded++;
 			bg_trim(a);
-		} else {
-			img_free(bgjob.out);
-			if (a && !a->bg) {
-				a->bg_state = 2;
-				if (bgjob.npaths) bg_bad++; else bg_none++;   /* files found but not decodable vs. none */
-			}
-		}
-		bgjob.out = NULL;
+		} else if (a && a->bg_state != 1) { a->bg_state = 2; bg_bad++; }
+		img_free(bgjob.bg); img_free(bgjob.box); img_free(bgjob.boxh); img_free(bgjob.bgs);
+		bgjob.bg = bgjob.box = bgjob.boxh = bgjob.bgs = NULL;
 		bgjob.state = 0;
 		S.dirty = 1;
 	}
@@ -569,13 +791,18 @@ static void draw_icon_or_cover(App *a, int x, int y, int s, int r)
 static void draw_tile(int ai, int x, int y, int focused)
 {
 	App *a = &apps[ai];
-	if (focused) gfx_rrect(x - 4, y - 4, TILE + 8, TILE + 8, 14, rgb(C_ACC), 255);
-	draw_icon_or_cover(a, x, y, TILE, 10);
+	/* portrait tile: box art if there is one, else the square icon centred on a card */
+	if (focused) gfx_rrect(x - 4, y - 4, TILE + 8, TILE_H + 8, 14, rgb(C_ACC), 255);
+	if (a->box) gfx_img(a->box, x, y, 10, 255);
+	else {
+		gfx_rrect(x, y, TILE, TILE_H, 10, rgb(C_CARD), 255);
+		draw_icon_or_cover(a, x, y + (TILE_H - TILE) / 2, TILE, 10);
+	}
 	if (a->fav) {
 		gfx_circle(x + TILE - 13, y + 13, 10, rgb(C_BG), 200);
 		star(x + TILE - 13, y + 13.5f, 7, rgb(C_STAR));
 	}
-	text_fit(focused ? FONT_BOLD : FONT_REG, FS(12), x, y + TILE + 8, TILE, a->title, rgb(focused ? C_TXT : C_TXT2), 255);
+	text_fit(focused ? FONT_BOLD : FONT_REG, FS(12), x, y + TILE_H + 8, TILE, a->title, rgb(focused ? C_TXT : C_TXT2), 255);
 }
 
 /* controller glyphs */
@@ -710,9 +937,9 @@ static void draw_logo(float x, float y, float size, u32 bg)
 	float k = size / 120.f;
 	int r10 = (int)(L(10) + 0.5f);
 	gfx_rrect((int)(x + L(8)), (int)(y + L(8)), (int)L(46), (int)L(46), r10, rgb(0x2a3846), 255);
-	/* focus ring: outer accent, inner background */
-	gfx_rrect((int)(x + L(58.5f)), (int)(y + L(2.5f)), (int)L(59), (int)L(59), (int)(L(15.5f) + 0.5f), rgb(C_ACC), 255);
-	gfx_rrect((int)(x + L(61.5f)), (int)(y + L(5.5f)), (int)L(53), (int)L(53), (int)(L(12.5f) + 0.5f), bg, 255);
+	/* focus ring = 3E's <rect x=59 y=3 w=58 h=58 rx=15 stroke-width=3>: outer accent, inner background */
+	gfx_rrect((int)(x + L(57.5f)), (int)(y + L(1.5f)), (int)(L(61) + 0.5f), (int)(L(61) + 0.5f), (int)(L(16.5f) + 0.5f), rgb(C_ACC), 255);
+	gfx_rrect((int)(x + L(60.5f)), (int)(y + L(4.5f)), (int)(L(55) + 0.5f), (int)(L(55) + 0.5f), (int)(L(13.5f) + 0.5f), bg, 255);
 	gfx_rrect((int)(x + L(65)), (int)(y + L(9)), (int)L(46), (int)L(46), r10, rgb(C_ACC), 255);
 	/* start arrow with rounded tips */
 	float ax = x + L(83.5f), ay = y + L(24.5f), bx = x + L(83.5f), by = y + L(39.5f), cx = x + L(96.5f), cy = y + L(32);
@@ -756,7 +983,8 @@ static void draw_boot(void)
 #define HERO_Y     52
 #define HERO_DY    ((HERO_H - 156) / 2)
 #define HOME_TOP   (HERO_Y + HERO_H + 8)
-#define HERO_BTN_X (24 + 162)
+#define HERO_TX    (14 + HBOX_W + 20)   /* text column right of the box art */
+#define HERO_BTN_X (24 + HERO_TX)
 #define HERO_BTN_Y (HERO_Y + HERO_DY + 106)
 #define TOP_KEYN   12
 static u32 *topbuf;
@@ -772,7 +1000,7 @@ static void top_key(int *k)
 	k[7] = c.hour * 60 + c.minute;
 	k[8] = plat_battery(&chg); k[9] = chg;
 	k[10] = (int)hash_s(a->id);
-	k[11] = a->bg != NULL;
+	k[11] = (a->bg != NULL) | (a->boxh != NULL) << 1;
 }
 
 static void draw_hero(int ai)
@@ -797,17 +1025,18 @@ static void draw_hero(int ai)
 		gfx_rrect(x, y, 30, h, 12, tint, 255);
 		gfx_hgrad(x + 14, y, 520, h, tint, dark);
 	}
-	draw_icon_or_cover(a, x + 14, y + (h - 128) / 2, 128, 12);
+	if (a->boxh) gfx_img(a->boxh, x + 14, y + (h - HBOX_H) / 2, 10, 255);
+	else draw_icon_or_cover(a, x + 14 + (HBOX_W - 128) / 2, y + (h - 128) / 2, 128, 12);
 	y += HERO_DY;   /* text block below is laid out for the original 156 px */
-	int tx = x + 162;
+	int tx = x + HERO_TX;
 	const char *eb = S.hrow < nrows ? rows[S.hrow].title : "";
 	if (S.hrow == 0 && a->last && nrows && rows[0].title[0] == 'Z') eb = "Weiterspielen";
 	text(FONT_BOLD, FS(12), tx, y + 18, eb, rgb(C_MUTE), 255);
-	text_fit(FONT_BOLD, FS(26), tx, y + 36, w - 180, a->title, rgb(C_TXT), 255);
+	text_fit(FONT_BOLD, FS(26), tx, y + 36, w - HERO_TX - 18, a->title, rgb(C_TXT), 255);
 	char last[48], meta[160];
 	fmt_last(a->last, last, sizeof last);
 	snprintf(meta, sizeof meta, "%s%s   ·   %s   ·   %s", a->last ? "Zuletzt gestartet: " : "", a->last ? last : "Noch nie gestartet", cat_name(a->cat), a->id);
-	text_fit(FONT_REG, FS(13), tx, y + 76, w - 180, meta, rgb(C_TXT2), 255);
+	text_fit(FONT_REG, FS(13), tx, y + 76, w - HERO_TX - 18, meta, rgb(C_TXT2), 255);
 	int by = y + 106;
 	gfx_rrect(tx, by, 136, 36, 8, rgb(C_ACC), 255);
 	glyph(tx + 12, by + 8, G_X, rgb(C_INK), rgb(C_ACC));
@@ -872,7 +1101,7 @@ static void draw_home(void)
 			if (tx > SCR_W || tx + TILE < 0) continue;
 			int foc = r == S.hrow && c == S.hcol;
 			draw_tile(rows[r].idx[c], tx, ry + 28, foc);
-			hit(tx, ry + 28, TILE, TILE + 26, H_HTILE, r, c);
+			hit(tx, ry + 28, TILE, TILE_H + 26, H_HTILE, r, c);
 		}
 	}
 	gfx_pop_clip();
@@ -918,7 +1147,7 @@ static void draw_lib(void)
 			int tx = 28 + c * LIB_PX, ty = top + 18 + r * LIB_PY - (int)S.ly;
 			if (ty > SCR_H || ty + LIB_PY < top) continue;
 			draw_tile(lib[i], tx, ty, i == S.lidx);
-			hit(tx, ty, TILE, TILE + 26, H_LTILE, i, 0);
+			hit(tx, ty, TILE, TILE_H + 26, H_LTILE, i, 0);
 		}
 		gfx_pop_clip();
 	}
@@ -979,22 +1208,98 @@ enum { CF_INSTALL = 1, CF_UNINSTALL };
 #define NSET 4
 #define SET_W 440
 
-/* network probe (cover download, step 1) – runs on the job thread */
-static volatile int net_state;   /* 0 idle, 1 running, 2 finished (toast pending), 3 shown */
-static char net_sum[128];
+/* ---------- box art download (HexFlow-Covers, CC BY-NC-SA 4.0) ----------
+   Runs on the job thread: one HTTPS GET per installed app that has no box
+   art yet; 404 = no cover in the database. Covers are only stored on the
+   device – never bundled with VitaDeck. */
+#define COVER_URL "https://raw.githubusercontent.com/andiweli/hexflow-covers/main/Covers/PSVita/%s.png"
 
-static void net_job(void *arg)
+static struct {
+	volatile int state;        /* 0 idle, 1 running, 2 finished (pending), 3 shown */
+	volatile int done;
+	int total, got, have, missing, failed;
+	char ids[MAXA][16];
+	char msg[128];
+} cov;
+static int cov_have_now;       /* covers on the card when the settings were opened */
+
+/* create every directory along path ("ux0:data/VitaDeck/covers/box") */
+static void mkdirs(const char *path)
+{
+	char p[160];
+	snprintf(p, sizeof p, "%s", path);
+	for (char *c = strchr(p, '/'); c; c = strchr(c + 1, '/')) { *c = 0; plat_mkdir(p); *c = '/'; }
+	plat_mkdir(p);
+}
+
+static void cover_job(void *arg)
 {
 	(void)arg;
-	plat_net_test(net_sum, sizeof net_sum);
+	char err[96];
+	mkdirs(plat_cover_dir());
+	if (plat_net_begin(err, sizeof err) < 0) {
+		snprintf(cov.msg, sizeof cov.msg, "Cover laden: %s", err);
+	} else {
+		for (int i = 0; i < cov.total; i++) {
+			char path[160], url[200];
+			snprintf(path, sizeof path, "%s/%s.png", plat_cover_dir(), cov.ids[i]);
+			if (plat_file_exists(path)) cov.have++;
+			else {
+				snprintf(url, sizeof url, COVER_URL, cov.ids[i]);
+				int r = plat_http_download(url, path);
+				if (r == 0) cov.got++; else if (r == 1) cov.missing++; else cov.failed++;
+			}
+			cov.done = i + 1;
+			if (cov.failed >= 3 && cov.got == 0) break;   /* GitHub not reachable – don't hammer it */
+		}
+		plat_net_end();
+		if (cov.failed >= 3 && cov.got == 0)
+			snprintf(cov.msg, sizeof cov.msg, "Keine Verbindung zum Cover-Server (Details in net.log)");
+		else
+			snprintf(cov.msg, sizeof cov.msg, "Cover: %d neu, %d schon da, %d nicht verfügbar%s", cov.got, cov.have, cov.missing,
+			         cov.failed ? ", Fehler bei einigen" : "");
+	}
 	__sync_synchronize();
-	net_state = 2;
+	cov.state = 2;
+}
+
+static int count_covers(void)
+{
+	int n = 0;
+	for (int i = 0; i < napps; i++) {
+		char path[160];
+		snprintf(path, sizeof path, "%s/%s.png", plat_cover_dir(), apps[i].id);
+		n += plat_file_exists(path);
+	}
+	return n;
+}
+
+/* new covers on the card: drop all loaded art so it is rebuilt from the files */
+static void art_reload_all(void)
+{
+	for (int i = 0; i < napps; i++) { app_free_art(&apps[i]); apps[i].bg_state = 0; }
+	bg_loaded = bg_ok = bg_bad = bg_none = bg_cursor = 0;
+	bg_focus = -1;
+	top_ok = 0;
+	art_boot_load();
+}
+
+static void cover_start(void)
+{
+	if (cov.state == 1) return;
+	cov.total = 0;
+	for (int i = 0; i < napps && cov.total < MAXA; i++) snprintf(cov.ids[cov.total++], 16, "%s", apps[i].id);
+	cov.done = cov.got = cov.have = cov.missing = cov.failed = 0;
+	cov.msg[0] = 0;
+	cov.state = 1;
+	if (plat_job(cover_job, NULL) < 0) { cov.state = 0; toast("Lader ist beschäftigt, bitte gleich nochmal"); }
 }
 
 static void settings_open(void)
 {
 	plat_plugin_cfg_load(&S.set_as, &S.set_ret);
 	S.plug = plat_plugin_state(S.plug_cfg, sizeof S.plug_cfg);
+	if (cov.state != 1) cov_have_now = count_covers();
 	S.si = 0;
 	S.ov = OV_SET;
 }
@@ -1015,7 +1320,7 @@ static void draw_set(void)
 	text(FONT_BOLD, FS(15), 52, 21, "Einstellungen", rgb(C_TXT), 255);
 	gfx_rect(20, 60, SET_W - 40, 1, rgb(C_LINE2), 255);
 
-	static const char *lbl[NSET] = { "Nach Spielende zurück", "Beim Start öffnen", "Rückkehr-Plugin", "Netzwerk-Test" };
+	static const char *lbl[NSET] = { "Nach Spielende zurück", "Beim Start öffnen", "Rückkehr-Plugin", "Cover laden" };
 	static const char *sub[NSET] = { "Öffnet VitaDeck wieder, wenn das Spiel endet",
 	                                 "VitaDeck startet nach dem Einschalten der Vita", NULL, NULL };
 	int y = 70;
@@ -1028,14 +1333,21 @@ static void draw_set(void)
 			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 130, sub[i], rgb(C_MUTE), 255);
 			toggle_sw(SET_W - 76, y + 20, i == 0 ? S.set_ret : S.set_as);
 		} else if (i == 3) {
-			const char *st = net_state == 1 ? "läuft …" : net_state >= 2 ? net_sum
-			                                : "Lädt ein Cover von GitHub, Details in net.log";
-			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 170, st,
-			         rgb(net_state >= 2 && !strncmp(net_sum, "OK", 2) ? C_GREEN : C_MUTE), 255);
-			const char *act = net_state == 1 ? "…" : "Starten";
-			int aw = text_w(FONT_BOLD, FS(13), act) + 28;
-			gfx_rrect(SET_W - 32 - aw, y + 16, aw, 32, 8, rgb(C_BTN), 255);
-			text(FONT_BOLD, FS(13), SET_W - 32 - aw + 14, y + 23, act, rgb(C_TXT), 255);
+			char st[128];
+			if (cov.state == 1) snprintf(st, sizeof st, "Lade %d von %d …", cov.done, cov.total);
+			else if (cov.state >= 2) snprintf(st, sizeof st, "%s", cov.msg);
+			else snprintf(st, sizeof st, "%d von %d vorhanden · aus HexFlow-Covers", cov_have_now, napps);
+			text_fit(FONT_REG, FS(11), 30, y + 37, SET_W - 170, st, rgb(C_MUTE), 255);
+			if (cov.state == 1) {   /* progress bar instead of the button */
+				gfx_rrect(SET_W - 132, y + 28, 100, 8, 4, rgb(0x2a3846), 255);
+				int pw = cov.total ? 100 * cov.done / cov.total : 0;
+				if (pw > 0) gfx_rrect(SET_W - 132, y + 28, pw < 8 ? 8 : pw, 8, 4, rgb(C_ACC), 255);
+			} else {
+				const char *act = "Laden";
+				int aw = text_w(FONT_BOLD, FS(13), act) + 28;
+				gfx_rrect(SET_W - 32 - aw, y + 16, aw, 32, 8, rgb(C_ACC), 255);
+				text(FONT_BOLD, FS(13), SET_W - 32 - aw + 14, y + 23, act, rgb(C_INK), 255);
+			}
 		} else {
 			const char *st = S.plug == PLUG_INSTALLED ? "installiert" :
 			                 S.plug == PLUG_OTHER_PATH ? "eingetragen (anderer Pfad)" : "nicht installiert";
@@ -1054,11 +1366,13 @@ static void draw_set(void)
 	const char *note = S.plug == PLUG_NONE ? "Die Schalter wirken erst mit installiertem Plugin."
 	                                       : "Plugin-Änderungen wirken nach einem Neustart der Vita.";
 	text(FONT_REG, FS(11), 22, y + 4, note, rgb(C_TXT2), 255);
-	text(FONT_REG, FS(11), 22, y + 26, "Notausgang beim Einschalten: SELECT = kein Autostart,", rgb(C_MUTE), 255);
-	text(FONT_REG, FS(11), 22, y + 44, "L = taiHEN lädt keine Plugins.", rgb(C_MUTE), 255);
+	text(FONT_REG, FS(11), 22, y + 24, "Notausgang beim Einschalten: SELECT = kein Autostart, L = keine Plugins", rgb(C_MUTE), 255);
 	char b[64];
 	snprintf(b, sizeof b, "Konfiguration: %s", S.plug_cfg);
-	text(FONT_REG, FS(11), 22, y + 66, b, rgb(C_DIM), 255);
+	text(FONT_REG, FS(11), 22, y + 44, b, rgb(C_DIM), 255);
+	/* required attribution for the box art database (CC BY-NC-SA 4.0) */
+	text(FONT_REG, FS(11), 22, y + 64, "Cover: HexFlow-Covers von Andiweli, CC BY-NC-SA 4.0", rgb(C_DIM), 255);
+	text(FONT_REG, FS(11), 22, y + 82, "Spielgrafiken © der jeweiligen Rechteinhaber", rgb(C_DIM), 255);
 	Hint hs[] = { { G_X, S.si >= 2 ? "Ausführen" : "Umschalten" }, { G_O, "Zurück" } };
 	footer(NULL, hs, 2);
 }
@@ -1091,9 +1405,7 @@ static void settings_act(int i)
 		if (i == 0) S.set_ret = !S.set_ret; else S.set_as = !S.set_as;
 		if (plat_plugin_cfg_save(S.set_as, S.set_ret) < 0) toast("Einstellung konnte nicht gespeichert werden");
 	} else if (i == 3) {
-		if (net_state == 1) return;
-		net_state = 1;
-		if (plat_job(net_job, NULL) < 0) { net_state = 0; toast("Lader ist beschäftigt, bitte gleich nochmal"); }
+		cover_start();
 	} else {
 		S.confirm = S.plug == PLUG_INSTALLED ? CF_UNINSTALL : CF_INSTALL;
 		S.ov = OV_CONFIRM;
@@ -1160,7 +1472,7 @@ static void draw_qa(void)
 	if (pct >= 0) snprintf(b, sizeof b, "Akku %d %%%s", pct, chg ? " · lädt" : "");
 	else snprintf(b, sizeof b, "Akku: unbekannt");
 	text(FONT_BOLD, FS(14), px + 34, y + 14, b, rgb(C_TXT), 255);
-	snprintf(b, sizeof b, "%d Apps · Hintergründe: %d ok, %d unlesbar, %d ohne", napps, bg_ok, bg_bad, bg_none);
+	snprintf(b, sizeof b, "%d Apps · Cover: %d, nur Icon: %d, Fehler: %d", napps, bg_ok, bg_none, bg_bad);
 	text(FONT_REG, FS(13), px + 34, y + 40, b, rgb(C_TXT2), 255);
 	text(FONT_REG, FS(12), px + 34, y + 62, plat_job_threaded() ? "Einstellungen gelten systemweit. · Lader: Thread"
 	                                                             : "Einstellungen gelten systemweit. · Lader: inline", rgb(C_MUTE), 255);
@@ -1299,7 +1611,7 @@ static void free_apps(void)
 	for (int i = 0; i < napps; i++) {
 		img_free(apps[i].ic); img_free(apps[i].ics);
 		img_free(apps[i].cv); img_free(apps[i].cvs);
-		img_free(apps[i].bg);
+		app_free_art(&apps[i]);
 	}
 	bg_focus = -1;   /* a running background job is matched by id when it finishes */
 	bg_ok = bg_bad = bg_none = bg_cursor = bg_loaded = 0;
@@ -1327,6 +1639,7 @@ void ui_scan(void)
 	free(pa);
 	icon_cursor = 0;
 	load_state();
+	art_boot_load();   /* cached covers right away – no PNG decoding at startup */
 	rebuild();
 }
 
@@ -1633,10 +1946,16 @@ int ui_frame(const Input *in, u32 *buf)
 
 	pump_icons();
 	pump_bg(now);
-	if (net_state == 2) {   /* network probe finished on the job thread */
+	if (cov.state == 1 && (S.ov == OV_SET || S.ov == OV_CONFIRM)) {   /* live progress */
+		static int shown = -1;
+		if (shown != cov.done) { shown = cov.done; S.dirty = 1; }
+	}
+	if (cov.state == 2) {   /* cover download finished on the job thread */
 		__sync_synchronize();
-		net_state = 3;
-		toast(net_sum);
+		cov.state = 3;
+		toast(cov.msg);
+		if (cov.got) art_reload_all();   /* rebuild tiles/hero from the new files */
+		cov_have_now = cov.have + cov.got;
 		S.dirty = 1;
 	}
 

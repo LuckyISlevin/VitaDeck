@@ -209,25 +209,7 @@ int plat_scan_apps(PlatApp **out)
 	return n;
 }
 
-int plat_bg_paths(const char *id, char out[][128], int max)
-{
-	static const char *FMT[] = {
-		"ux0:data/VitaDeck/covers/%s.png",                   /* user supplied */
-		"ux0:data/VitaDeck/covers/%s.jpg",
-		"ur0:appmeta/%s/pic0.png",                           /* system copies (decrypted) */
-		"ur0:appmeta/%s/livearea/contents/bg0.png",
-		"ux0:app/%s/sce_sys/pic0.png",                       /* plain for homebrew */
-		"ux0:app/%s/sce_sys/livearea/contents/bg0.png",
-		"ux0:app/%s/sce_sys/livearea/contents/bg.png",
-	};
-	int n = 0;
-	for (unsigned i = 0; i < sizeof FMT / sizeof FMT[0] && n < max; i++) {
-		char p[128];
-		snprintf(p, sizeof p, FMT[i], id);
-		if (file_exists(p)) { snprintf(out[n], 128, "%s", p); n++; }
-	}
-	return n;
-}
+const char *plat_cover_dir(void) { return "ux0:data/VitaDeck/covers/box"; }
 
 /* ---------- background worker (core 2) ---------- */
 static SceUID job_sema = -1;
@@ -438,9 +420,15 @@ int plat_plugin_cfg_save(int autostart, int ret)
 	return plat_write_file(PLUG_CFG, b, n);
 }
 
-/* ---------- network probe (cover download, step 1) ---------- */
-#define NET_LOG  "ux0:data/VitaDeck/net.log"
-#define NET_TEST_URL "https://raw.githubusercontent.com/andiweli/hexflow-covers/main/Covers/PSVita/PCSB00321.png"
+/* ---------- network: HTTPS downloads (box art) ----------
+   The Vita's own SSL library (FW 3.65) cannot complete a TLS handshake with
+   raw.githubusercontent.com – it fails with and without certificate checks
+   (SceHttp 0x80431075 / SceSsl 0x80435061, tested on hardware). So downloads
+   use libcurl with mbedTLS and the Mozilla CA bundle shipped in the VPK,
+   certificate verification on. Everything here runs on the job thread. */
+#define NET_LOG       "ux0:data/VitaDeck/net.log"
+#define NET_CA_BUNDLE "app0:res/cacert.pem"
+#define NET_MAX_FILE  (2 * 1024 * 1024)
 
 static void net_log(const char *fmt, ...)
 {
@@ -460,111 +448,99 @@ static void net_log(const char *fmt, ...)
 	sceIoClose(fd);
 }
 
-/* The Vita's own SSL library (FW 3.65) cannot complete a TLS handshake with
-   raw.githubusercontent.com – it fails with and without certificate checks
-   (SceHttp 0x80431075 / SceSsl 0x80435061, tested on hardware). So downloads
-   use libcurl with mbedTLS and the Mozilla CA bundle shipped in the VPK. */
-#define NET_CA_BUNDLE "app0:res/cacert.pem"
+static CURL *net_curl;
+static int net_ctl = -1;
 
-typedef struct { int total; unsigned char head[8]; } NetSink;
+typedef struct { unsigned char *buf; int len, cap; } NetBuf;
 
 static size_t net_sink(void *ptr, size_t size, size_t nmemb, void *ud)
 {
-	NetSink *s = ud;
+	NetBuf *b = ud;
 	size_t n = size * nmemb;
-	if (s->total < 8) {
-		size_t k = 8 - s->total < n ? 8 - s->total : n;
-		memcpy(s->head + s->total, ptr, k);
+	if (b->len + (int)n > NET_MAX_FILE) return 0;   /* abort anything absurdly large */
+	if (b->len + (int)n > b->cap) {
+		int cap = b->cap ? b->cap * 2 : 64 * 1024;
+		while (cap < b->len + (int)n) cap *= 2;
+		unsigned char *nb = realloc(b->buf, cap);
+		if (!nb) return 0;
+		b->buf = nb; b->cap = cap;
 	}
-	s->total += (int)n;
-	return s->total > 4 * 1024 * 1024 ? 0 : n;   /* abort anything absurdly large */
+	memcpy(b->buf + b->len, ptr, n);
+	b->len += (int)n;
+	return n;
 }
 
-/* one GET of NET_TEST_URL; returns the CURLcode, fills HTTP status / bytes / PNG check */
-static int net_get_once(int verify, long *status, int *bytes, int *is_png)
-{
-	*status = 0; *bytes = 0; *is_png = 0;
-	CURL *c = curl_easy_init();
-	if (!c) { net_log("  curl_easy_init failed"); return -1; }
-	char err[CURL_ERROR_SIZE] = { 0 };
-	NetSink sink = { 0 };
-	curl_easy_setopt(c, CURLOPT_URL, NET_TEST_URL);
-	curl_easy_setopt(c, CURLOPT_USERAGENT, "VitaDeck/0.3");
-	curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-	curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
-	curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
-	curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
-	curl_easy_setopt(c, CURLOPT_ERRORBUFFER, err);
-	curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, net_sink);
-	curl_easy_setopt(c, CURLOPT_WRITEDATA, &sink);
-	curl_easy_setopt(c, CURLOPT_CAINFO, NET_CA_BUNDLE);
-	curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, verify ? 1L : 0L);
-	curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, verify ? 2L : 0L);
-	uint64_t t0 = sceKernelGetProcessTimeWide();
-	CURLcode res = curl_easy_perform(c);
-	unsigned ms = (unsigned)((sceKernelGetProcessTimeWide() - t0) / 1000);
-	curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, status);
-	char *ip = NULL;
-	curl_easy_getinfo(c, CURLINFO_PRIMARY_IP, &ip);
-	net_log("  curl_easy_perform: %d (%s) in %u ms, server %s", (int)res,
-	        err[0] ? err : curl_easy_strerror(res), ms, ip && ip[0] ? ip : "-");
-	*bytes = sink.total;
-	*is_png = sink.total >= 8 && !memcmp(sink.head, "\x89PNG\r\n\x1a\n", 8);
-	net_log("  HTTP %ld, received %d bytes, PNG signature: %s", *status, sink.total, *is_png ? "yes" : "no");
-	curl_easy_cleanup(c);
-	return (int)res;
-}
+int plat_file_exists(const char *path) { return file_exists(path); }
+int plat_file_size(const char *path) { SceIoStat st; return sceIoGetstat(path, &st) < 0 ? -1 : (int)st.st_size; }
 
-int plat_net_test(char *sum, int n)
+int plat_net_begin(char *err, int n)
 {
 	sceIoRemove(NET_LOG);
-	net_log("VitaDeck network test (libcurl), URL %s", NET_TEST_URL);
+	net_log("VitaDeck network session");
 	net_log("LoadModule NET: 0x%08X", (unsigned)sceSysmoduleLoadModule(SCE_SYSMODULE_NET));
-
 	static char netmem[1024 * 1024];
 	SceNetInitParam p = { netmem, sizeof netmem, 0 };
-	int r = sceNetInit(&p);
-	net_log("sceNetInit: 0x%08X", (unsigned)r);   /* 0x80410110 = already initialised, fine */
-	int ctl = sceNetCtlInit();
-	net_log("sceNetCtlInit: 0x%08X", (unsigned)ctl);
+	net_log("sceNetInit: 0x%08X", (unsigned)sceNetInit(&p));   /* 0x80410110 = already initialised */
+	net_ctl = sceNetCtlInit();
 	int state = -1;
-	r = sceNetCtlInetGetState(&state);
-	net_log("InetGetState: r=0x%08X state=%d (3 = connected)", (unsigned)r, state);
-	int ok = -1;
+	sceNetCtlInetGetState(&state);
+	net_log("sceNetCtlInit: 0x%08X, state %d (3 = connected)", (unsigned)net_ctl, state);
 	if (state != SCE_NETCTL_STATE_CONNECTED) {
-		snprintf(sum, n, "Kein WLAN verbunden (Status %d)", state);
-		goto out;
+		snprintf(err, n, "Kein WLAN verbunden");
+		plat_net_end();
+		return -1;
 	}
-	SceNetCtlInfo info;
-	memset(&info, 0, sizeof info);
-	if (sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info) >= 0) net_log("IP address: %s", info.ip_address);
-	net_log("CA bundle %s: %s", NET_CA_BUNDLE, file_exists(NET_CA_BUNDLE) ? "present" : "MISSING");
-
 	CURLcode g = curl_global_init(CURL_GLOBAL_DEFAULT);
 	net_log("curl_global_init: %d, %s", (int)g, curl_version());
-
-	long status; int bytes, png;
-	net_log("Attempt 1: certificate verification ON (Mozilla CA bundle)");
-	int res = net_get_once(1, &status, &bytes, &png);
-	if (res == CURLE_OK && status == 200 && png) {
-		snprintf(sum, n, "OK mit Zertifikatsprüfung · HTTP 200 · %d KB", (bytes + 512) / 1024);
-		ok = 0;
-	} else {
-		int res1 = res; long st1 = status;
-		net_log("Attempt 2: certificate verification OFF (diagnosis only)");
-		res = net_get_once(0, &status, &bytes, &png);
-		if (res == CURLE_OK && status == 200 && png)
-			snprintf(sum, n, "Nur ohne Prüfung OK (mit: curl %d) · %d KB", res1, (bytes + 512) / 1024);
-		else
-			snprintf(sum, n, "Fehlgeschlagen: curl %d / ohne Prüfung curl %d (HTTP %ld/%ld)", res1, res, st1, status);
-	}
-	curl_global_cleanup();
-out:
-	net_log("Result: %s", sum);
-	if (ctl >= 0) sceNetCtlTerm();
-	sceNetTerm();
-	return ok;
+	net_curl = curl_easy_init();
+	if (!net_curl) { snprintf(err, n, "curl konnte nicht starten"); plat_net_end(); return -1; }
+	curl_easy_setopt(net_curl, CURLOPT_USERAGENT, "VitaDeck/0.3 (+https://github.com/LuckyISlevin/VitaDeck)");
+	curl_easy_setopt(net_curl, CURLOPT_FOLLOWLOCATION, 1L);
+	curl_easy_setopt(net_curl, CURLOPT_NOSIGNAL, 1L);
+	curl_easy_setopt(net_curl, CURLOPT_CONNECTTIMEOUT, 10L);
+	curl_easy_setopt(net_curl, CURLOPT_TIMEOUT, 30L);
+	curl_easy_setopt(net_curl, CURLOPT_CAINFO, NET_CA_BUNDLE);
+	curl_easy_setopt(net_curl, CURLOPT_SSL_VERIFYPEER, 1L);
+	curl_easy_setopt(net_curl, CURLOPT_SSL_VERIFYHOST, 2L);
+	curl_easy_setopt(net_curl, CURLOPT_WRITEFUNCTION, net_sink);
+	return 0;
 }
+
+/* GET url and store the body at path (via .tmp + rename). Only stores PNG/JPEG.
+   Returns 0 = saved, 1 = not on the server (404), <0 = error. */
+int plat_http_download(const char *url, const char *path)
+{
+	if (!net_curl) return -1;
+	NetBuf b = { 0 };
+	char err[CURL_ERROR_SIZE] = { 0 };
+	curl_easy_setopt(net_curl, CURLOPT_URL, url);
+	curl_easy_setopt(net_curl, CURLOPT_WRITEDATA, &b);
+	curl_easy_setopt(net_curl, CURLOPT_ERRORBUFFER, err);
+	uint64_t t0 = sceKernelGetProcessTimeWide();
+	CURLcode res = curl_easy_perform(net_curl);
+	long status = 0;
+	curl_easy_getinfo(net_curl, CURLINFO_RESPONSE_CODE, &status);
+	unsigned ms = (unsigned)((sceKernelGetProcessTimeWide() - t0) / 1000);
+	int r;
+	int is_img = b.len >= 8 && (!memcmp(b.buf, "\x89PNG\r\n\x1a\n", 8) || (b.buf[0] == 0xFF && b.buf[1] == 0xD8));
+	if (res != CURLE_OK) r = -2;
+	else if (status == 404) r = 1;
+	else if (status != 200 || !is_img) r = -3;
+	else r = plat_write_file(path, b.buf, b.len) < 0 ? -4 : 0;
+	net_log("GET %s -> curl %d, HTTP %ld, %d bytes, %u ms: %s%s%s", url, (int)res, status, b.len, ms,
+	        r == 0 ? "saved" : r == 1 ? "not found" : "FAILED", err[0] ? " – " : "", err);
+	free(b.buf);
+	return r;
+}
+
+void plat_net_end(void)
+{
+	if (net_curl) { curl_easy_cleanup(net_curl); net_curl = NULL; curl_global_cleanup(); }
+	if (net_ctl >= 0) { sceNetCtlTerm(); net_ctl = -1; }
+	sceNetTerm();
+}
+
+int plat_mkdir(const char *path) { return sceIoMkdir(path, 0777); }
 
 int plat_set_brightness(int pct)
 {

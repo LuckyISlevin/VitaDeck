@@ -14,14 +14,14 @@ Fonts: Lato (UI) and Space Grotesk (wordmark), both under the SIL Open Font Lice
 ## Screenshots
 | | |
 |---|---|
-| ![Home screen with hero background](docs/screenshots/startseite.png) | ![Home screen, Vita games row](docs/screenshots/startseite-reihen.png) |
-| Home: "continue playing" with background art | Rows by category |
+| ![Home screen with box art](docs/screenshots/startseite.png) | ![Home screen, Vita games row](docs/screenshots/startseite-reihen.png) |
+| Home: box art in the hero, blurred background from the cover | Portrait box art tiles, rows by category |
 | ![Library](docs/screenshots/bibliothek.png) | ![App options](docs/screenshots/optionen.png) |
-| Library with category tabs | Options (△): favourite, hide |
+| Library: box art, apps without a cover show their icon | Options (△): favourite, hide |
 | ![Settings](docs/screenshots/einstellungen.png) | ![Quick access](docs/screenshots/schnellzugriff.png) |
-| Settings with the return plugin | Quick access (SELECT) |
+| Settings: return plugin and **cover download** | Quick access (SELECT) |
 
-<sub>Captured in the Vita3K emulator with a demo set: all titles and artwork are made up or generated (`docs/demo/`).</sub>
+<sub>Captured in the Vita3K emulator with a demo set: all titles and covers are made up and generated (`docs/demo/`). On a real Vita, "Cover laden" fetches the real box art from HexFlow-Covers.</sub>
 
 ## Requirements
 - A PS Vita with HENkaku/Ensō or h-encore and VitaShell
@@ -55,10 +55,11 @@ Touch: tap a tile to select it, tap again to start. The button hints in the foot
 - Reads all apps from `ux0:app` (title from `param.sfo`, icon from `ur0:appmeta/<ID>/icon0.png`)
 - Sorts them into Vita games (title ID `PCSxxxxxx`), homebrew and emulators (by name)
 - Home screen with a large hero area and rows: recently played, favourites, Vita games, homebrew, emulators
-- Hero background per app; the first readable source wins:
-  `ux0:data/VitaDeck/covers/<TITLE-ID>.png` or `.jpg` (your own images, any size, centre-cropped),
-  then `ur0:appmeta/<ID>/pic0.png`, `ur0:appmeta/<ID>/livearea/contents/bg0.png`, then the app's own `sce_sys/pic0.png` / LiveArea `bg0.png`/`bg.png`.
-  Images are decoded on a background thread and preloaded while the UI is idle; quick access shows how many were loaded / unreadable / missing.
+- **Box art:** portrait cover tiles and a cover in the hero, with a blurred, darkened background made from the cover.
+  Settings → "Cover laden" downloads the box art of all installed apps over HTTPS from
+  [HexFlow-Covers](https://github.com/andiweli/hexflow-covers) (the database also used by HexFlow and RetroFlow) to
+  `ux0:data/VitaDeck/covers/box/<TITLE-ID>.png`; existing files are kept, so you can also put your own 250×320 PNGs there.
+  Wi-Fi is required. Apps without box art show their icon. Images are decoded on a background thread and preloaded while the UI is idle.
 - Library with categories and sorting (A–Z / recently played, via △ options)
 - Hide apps: △ → "Ausblenden"; hidden apps appear in the library tab "Ausgeblendet" (only shown when not empty) and can be restored there via △ → "Einblenden"
 - Launches via `sceAppMgrLaunchAppByUri("psgm:play?titleid=…")`; the launcher exits while the game runs. If a launch fails, VitaDeck stays open and shows the error code.
@@ -85,7 +86,7 @@ Touch: tap a tile to select it, tap again to start. The button hints in the foot
 
 ## Roadmap
 Planned features and ideas (in German): [docs/ROADMAP.md](docs/ROADMAP.md).
-Not included: launching PSP ISOs through Adrenaline (`ux0:pspemu`), downloading cover art.
+Not included: launching PSP ISOs through Adrenaline (`ux0:pspemu`).
 
 ## Building
 **Windows (recommended):** extract the native VitaSDK toolchain to `C:\vitasdk`
@@ -111,6 +112,12 @@ Note: the Makefile and CMake builds do not build or package the return plugin ye
 
 ## License
 VitaDeck is released under the [MIT License](LICENSE).
-Bundled third-party components keep their own licenses: Lato and Space Grotesk (SIL Open Font License 1.1, `res/OFL-*.txt`)
-and the stb libraries by Sean Barrett (public domain / MIT).
+Bundled third-party components keep their own licenses: Lato and Space Grotesk (SIL Open Font License 1.1, `res/OFL-*.txt`),
+the stb libraries by Sean Barrett (public domain / MIT), the Mozilla CA bundle `res/cacert.pem` (MPL-2.0), and the statically
+linked libcurl, mbedTLS, zlib and zstd (see [LICENSE](LICENSE)).
+
+**Box art:** VitaDeck ships no covers. "Cover laden" downloads them on your device from
+[HexFlow-Covers](https://github.com/andiweli/hexflow-covers) by Andiweli and contributors, licensed under
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/); the cover artwork itself remains © its respective publishers.
+
 VitaDeck is an unofficial homebrew project and is not affiliated with Sony Interactive Entertainment or Valve.

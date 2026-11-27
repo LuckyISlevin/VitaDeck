@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="240" height="240" role="img" aria-label="VitaDeck">
+  <!-- VitaDeck logo, concept 3E "Start-Kachel" (light variant, for light backgrounds such as #eef1f4) -->
+  <title>VitaDeck</title>
+  <rect x="8" y="8" width="46" height="46" rx="10" fill="#c3ccd6"/>
+  <!-- focus ring around the start tile -->
+  <rect x="59" y="3" width="58" height="58" rx="15" fill="none" stroke="#1f6fd1" stroke-width="3"/>
+  <rect x="65" y="9" width="46" height="46" rx="10" fill="#1f6fd1"/>
+  <!-- start arrow in the background colour -->
+  <path d="M83.5 24.5 L83.5 39.5 L96.5 32 Z" fill="#eef1f4" stroke="#eef1f4" stroke-width="5" stroke-linejoin="round"/>
+  <rect x="8" y="66" width="46" height="46" rx="10" fill="#9eabb9"/>
+  <rect x="65" y="66" width="46" height="46" rx="10" fill="#c3ccd6"/>
+</svg>
