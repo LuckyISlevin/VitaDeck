@@ -1,0 +1,28 @@
+# Builds the PSP-side boot plugin (psp-plugin/) with the pspdev toolchain, which
+# has no Windows build. The resulting vdboot.prx is downloaded and committed as
+# plugin/vdboot.prx; build.ps1 packs it into the VPK.
+name: psp-plugin
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'psp-plugin/**'
+      - '.github/workflows/psp-plugin.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: pspdev/pspdev:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make -C psp-plugin
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: vdboot
+          path: psp-plugin/vdboot.prx
