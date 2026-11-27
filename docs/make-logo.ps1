@@ -1,5 +1,5 @@
 # Renders every logo bitmap from the concept 3E "Start-Kachel" SVG (docs/logo.svg, docs/logo-light.svg):
-#   docs/logo-wordmark-{dark,light}.png         README header (mark + "Vita" regular / "Deck" bold, Space Grotesk)
+#   docs/logo-wordmark-{dark,light}.png         README header (mark + "Vita" regular / "Deck" bold, Lexend)
 #   sce_sys/icon0.png, sce_sys/livearea/contents/{bg,startup}.png   bubble + LiveArea (8-bit palettised)
 # Uses headless Chrome or Edge for exact SVG/font rendering (System.Drawing cannot pick the bold
 # face from a private font collection). Run from anywhere: .\docs\make-logo.ps1
@@ -25,8 +25,8 @@ function Get-Mark([hashtable]$p) {
 $Dark  = @{ t1 = '#2a3846'; acc = '#3d9bff'; ink = '#06121f'; t3 = '#3a4a5c'; t4 = '#2a3846'; text = '#e6edf3' }
 $Light = @{ t1 = '#c3ccd6'; acc = '#1f6fd1'; ink = '#eef1f4'; t3 = '#9eabb9'; t4 = '#c3ccd6'; text = '#0b1016' }
 $head = "<!doctype html><html><head><meta charset=`"utf-8`"><style>" +
-        "@font-face{font-family:SG;font-weight:400;src:url($res/SpaceGrotesk-Regular.ttf)}" +
-        "@font-face{font-family:SG;font-weight:700;src:url($res/SpaceGrotesk-Bold.ttf)}" +
+        "@font-face{font-family:SG;font-weight:400;src:url($res/Lexend-Regular.ttf)}" +
+        "@font-face{font-family:SG;font-weight:700;src:url($res/Lexend-Bold.ttf)}" +
         "@font-face{font-family:Lato;src:url($res/Lato-Regular.ttf)}" +
         "html,body{margin:0;overflow:hidden;background:transparent}" +
         ".wm{font-family:SG;line-height:1;letter-spacing:-0.02em}</style></head><body>"

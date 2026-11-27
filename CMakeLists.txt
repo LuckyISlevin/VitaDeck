@@ -34,8 +34,8 @@ vita_create_vpk(VitaDeck.vpk ${VITA_TITLEID} eboot.bin
        sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml
        res/Lato-Regular.ttf res/Lato-Regular.ttf
        res/Lato-Bold.ttf res/Lato-Bold.ttf
-       res/SpaceGrotesk-Regular.ttf res/SpaceGrotesk-Regular.ttf
-       res/SpaceGrotesk-Bold.ttf res/SpaceGrotesk-Bold.ttf
+       res/Lexend-Regular.ttf res/Lexend-Regular.ttf
+       res/Lexend-Bold.ttf res/Lexend-Bold.ttf
        res/OFL-Lato.txt res/OFL-Lato.txt
-       res/OFL-SpaceGrotesk.txt res/OFL-SpaceGrotesk.txt
+       res/OFL-Lexend.txt res/OFL-Lexend.txt
        res/cacert.pem res/cacert.pem)

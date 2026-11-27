@@ -9,7 +9,7 @@
 
 A console-style home screen launcher for the PS Vita (HENkaku/Ensō or h-encore), inspired by SteamOS – without any third-party branding.
 Plain C with a software renderer. The user interface is in German.
-Fonts: Lato (UI) and Space Grotesk (wordmark), both under the SIL Open Font License (`res/OFL-*.txt`).
+Fonts: Lato (UI) and Lexend (wordmark), both under the SIL Open Font License (`res/OFL-*.txt`).
 
 ## Screenshots
 | | |
@@ -77,7 +77,7 @@ Touch: tap a tile to select it, tap again to start. The button hints in the foot
 - Box art: Settings → "Cover laden" downloads covers from HexFlow-Covers over HTTPS (libcurl + mbedTLS, certificates verified)
 - Portrait tiles with box art; the hero shows the cover with a blurred, darkened background
 - Art cache next to every cover, so covers are there on the very first frame
-- Logo assets (bubble, LiveArea, README) redrawn exactly after concept 3E
+- Logo assets (bubble, LiveArea, README) redrawn exactly after concept 3E, wordmark now in Lexend (variant "3E · Lexend")
 
 ## What's new in v0.3
 - Tested on real hardware; smooth thanks to render caches, a present thread on its own CPU core and 444 MHz (~12 ms per frame)
@@ -118,7 +118,7 @@ Note: the Makefile and CMake builds do not build or package the return plugin ye
 
 ## License
 VitaDeck is released under the [MIT License](LICENSE).
-Bundled third-party components keep their own licenses: Lato and Space Grotesk (SIL Open Font License 1.1, `res/OFL-*.txt`),
+Bundled third-party components keep their own licenses: Lato and Lexend (SIL Open Font License 1.1, `res/OFL-*.txt`),
 the stb libraries by Sean Barrett (public domain / MIT), the Mozilla CA bundle `res/cacert.pem` (MPL-2.0), and the statically
 linked libcurl, mbedTLS, zlib and zstd (see [LICENSE](LICENSE)).
 

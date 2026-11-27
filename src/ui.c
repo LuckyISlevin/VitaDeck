@@ -1859,8 +1859,8 @@ void ui_init(void)
 	unsigned char *d; int len;
 	if (plat_read_file(plat_res("Lato-Regular.ttf"), &d, &len) >= 0) font_load(FONT_REG, d);
 	if (plat_read_file(plat_res("Lato-Bold.ttf"), &d, &len) >= 0) font_load(FONT_BOLD, d);
-	if (plat_read_file(plat_res("SpaceGrotesk-Regular.ttf"), &d, &len) >= 0) font_load(FONT_WM, d);
-	if (plat_read_file(plat_res("SpaceGrotesk-Bold.ttf"), &d, &len) >= 0) font_load(FONT_WM_BOLD, d);
+	if (plat_read_file(plat_res("Lexend-Regular.ttf"), &d, &len) >= 0) font_load(FONT_WM, d);
+	if (plat_read_file(plat_res("Lexend-Bold.ttf"), &d, &len) >= 0) font_load(FONT_WM_BOLD, d);
 	/* font data stays allocated for the app's lifetime */
 }
 

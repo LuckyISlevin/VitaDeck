@@ -71,8 +71,8 @@ $files = 'sce_sys/icon0.png',
          'sce_sys/livearea/contents/startup.png',
          'sce_sys/livearea/contents/template.xml',
          'res/Lato-Regular.ttf', 'res/Lato-Bold.ttf',
-         'res/SpaceGrotesk-Regular.ttf', 'res/SpaceGrotesk-Bold.ttf',
-         'res/OFL-Lato.txt', 'res/OFL-SpaceGrotesk.txt',
+         'res/Lexend-Regular.ttf', 'res/Lexend-Bold.ttf',
+         'res/OFL-Lato.txt', 'res/OFL-Lexend.txt',
          'res/cacert.pem'   # Mozilla CA bundle (curl.se, MPL-2.0) for certificate checks
 $packArgs = @('-s', "$Out\param.sfo", '-b', "$Out\eboot.bin")
 foreach ($f in $files) { $packArgs += @('-a', "$Root\$($f -replace '/', '\')=$f") }

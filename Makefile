@@ -47,10 +47,10 @@ build/VitaDeck.vpk: build/eboot.bin build/param.sfo sce_sys/icon0.png
 	  -a sce_sys/livearea/contents/template.xml=sce_sys/livearea/contents/template.xml \
 	  -a res/Lato-Regular.ttf=res/Lato-Regular.ttf \
 	  -a res/Lato-Bold.ttf=res/Lato-Bold.ttf \
-	  -a res/SpaceGrotesk-Regular.ttf=res/SpaceGrotesk-Regular.ttf \
-	  -a res/SpaceGrotesk-Bold.ttf=res/SpaceGrotesk-Bold.ttf \
+	  -a res/Lexend-Regular.ttf=res/Lexend-Regular.ttf \
+	  -a res/Lexend-Bold.ttf=res/Lexend-Bold.ttf \
 	  -a res/OFL-Lato.txt=res/OFL-Lato.txt \
-	  -a res/OFL-SpaceGrotesk.txt=res/OFL-SpaceGrotesk.txt \
+	  -a res/OFL-Lexend.txt=res/OFL-Lexend.txt \
 	  -a res/cacert.pem=res/cacert.pem $@
 
 host:
