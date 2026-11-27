@@ -1,10 +1,9 @@
 # VitaDeck – Feature ideas
 
-As of 2026-11-26, after v0.3. Sorted by value relative to effort.
-**Planned order for the next round: 1 → 5 → 6.**
+As of 2026-11-27, after v0.4. Sorted by value relative to effort.
+**Planned order for the next round: 5 → 6** (1 is done).
 
 ## Small but noticeable
-1. **Apply the saved brightness on startup** – `load_state()` reads `#bright`, but `plat_set_brightness()` is never called at startup.
 2. **"Always return to VitaDeck"** as a third switch in the settings – the plugin sees every game, so VitaDeck could also come back after games started from the LiveArea (replacement home screen). New key in `plugin.txt`.
 3. **App details in the options menu (△)** – version (`APP_VER` from `param.sfo`), size on the memory card, title ID.
 4. **Free space on ux0:** in quick access, next to the battery.
@@ -26,3 +25,5 @@ As of 2026-11-26, after v0.3. Sorted by value relative to effort.
 ## Done (selection)
 - Return after a game and autostart (plugin, steps 1–4), settings with installer
 - Hero backgrounds, hiding apps, performance (~12 ms per frame), logo, screenshots
+- v0.4: box art download, portrait tiles, art cache, logo "3E · Lexend"
+- 1. Brightness: the system setting (registry `/CONFIG/DISPLAY/brightness`) is read at startup and written back on every change; VitaDeck's saved value is only applied as a fallback

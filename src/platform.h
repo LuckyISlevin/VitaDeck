@@ -63,7 +63,9 @@ int plat_plugin_cfg_save(int autostart, int ret);
 int plat_net_begin(char *err, int n);                    /* 0 ok, <0 (e.g. no Wi-Fi) with message */
 int plat_http_download(const char *url, const char *path); /* 0 saved, 1 = 404, <0 error */
 void plat_net_end(void);
-int plat_set_brightness(int pct);
+int plat_get_brightness(void);  /* system setting in %, <0 = unknown */
+int plat_set_brightness(int pct); /* also stores it as the system setting */
+extern int plat_bright_raw;       /* raw system value last read, <0 = none (diagnostics) */
 int plat_get_volume(void);      /* 0..30, <0 = unavailable */
 int plat_set_volume(int v);
 void plat_standby(void);

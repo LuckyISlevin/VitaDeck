@@ -7,6 +7,7 @@
 #include <psp2/power.h>
 #include <psp2/appmgr.h>
 #include <psp2/avconfig.h>
+#include <psp2/registrymgr.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/io/dirent.h>
 #include <psp2/io/stat.h>
@@ -542,11 +543,32 @@ void plat_net_end(void)
 
 int plat_mkdir(const char *path) { return sceIoMkdir(path, 0777); }
 
+/* Brightness: SceAVConfig only drives the panel; the system setting (what the
+   PS button quick menu shows and restores) lives in the registry key
+   /CONFIG/DISPLAY/brightness, in the same units (21..max). VitaDeck reads it at
+   startup and writes it back on every change so both stay in sync. */
+#define BRIGHT_MIN 21
+int plat_bright_raw = -1;   /* last registry value read (quick access shows it) */
+
+int plat_get_brightness(void)
+{
+	int max = 0, v = 0;
+	if (sceAVConfigGetDisplayMaxBrightness(&max) < 0 || max <= 0) return -1;
+	if (sceRegMgrGetKeyInt("/CONFIG/DISPLAY", "brightness", &v) < 0) return -1;
+	plat_bright_raw = v;
+	if (v < BRIGHT_MIN || v > max) return -1;   /* implausible: let the caller fall back */
+	return (v * 100 + max / 2) / max;
+}
+
 int plat_set_brightness(int pct)
 {
 	int max = 0;
 	if (sceAVConfigGetDisplayMaxBrightness(&max) < 0 || max <= 0) return -1;
-	return sceAVConfigSetDisplayBrightness(max * pct / 100);
+	int v = max * pct / 100;
+	if (v < BRIGHT_MIN) v = BRIGHT_MIN;
+	int r = sceAVConfigSetDisplayBrightness(v);
+	if (r >= 0) sceRegMgrSetKeyInt("/CONFIG/DISPLAY", "brightness", v);
+	return r;
 }
 
 int plat_get_volume(void)

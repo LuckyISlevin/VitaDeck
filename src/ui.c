@@ -1472,7 +1472,7 @@ static void draw_qa(void)
 	if (pct >= 0) snprintf(b, sizeof b, "Akku %d %%%s", pct, chg ? " · lädt" : "");
 	else snprintf(b, sizeof b, "Akku: unbekannt");
 	text(FONT_BOLD, FS(14), px + 34, y + 14, b, rgb(C_TXT), 255);
-	snprintf(b, sizeof b, "%d Apps · Cover: %d, nur Icon: %d, Fehler: %d", napps, bg_ok, bg_none, bg_bad);
+	snprintf(b, sizeof b, "%d Apps · Cover: %d, nur Icon: %d, Fehler: %d · Hell.: %d", napps, bg_ok, bg_none, bg_bad, plat_bright_raw);
 	text(FONT_REG, FS(13), px + 34, y + 40, b, rgb(C_TXT2), 255);
 	text(FONT_REG, FS(12), px + 34, y + 62, plat_job_threaded() ? "Einstellungen gelten systemweit. · Lader: Thread"
 	                                                             : "Einstellungen gelten systemweit. · Lader: inline", rgb(C_MUTE), 255);
@@ -1639,6 +1639,11 @@ void ui_scan(void)
 	free(pa);
 	icon_cursor = 0;
 	load_state();
+	/* brightness: the system setting wins (it may have been changed in the PS
+	   button menu since); only if it can't be read, apply VitaDeck's saved value */
+	int sb = plat_get_brightness();
+	if (sb >= 0) { S.bright = sb < 10 ? 10 : sb; S.bright_ok = 1; }
+	else S.bright_ok = plat_set_brightness(S.bright) >= 0;
 	art_boot_load();   /* cached covers right away – no PNG decoding at startup */
 	rebuild();
 }

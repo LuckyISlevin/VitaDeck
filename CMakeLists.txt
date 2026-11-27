@@ -22,7 +22,7 @@ target_link_libraries(launcher
   m SceDisplay_stub SceCtrl_stub SceTouch_stub SceRtc_stub ScePower_stub
   SceAppMgr_stub SceAVConfig_stub SceSysmem_stub SceIofilemgr_stub
   SceLibKernel_stub SceKernelThreadMgr_stub SceProcessmgr_stub
-  SceSysmodule_stub SceNet_stub SceNetCtl_stub SceKernelModulemgr_stub)
+  SceSysmodule_stub SceNet_stub SceNetCtl_stub SceKernelModulemgr_stub SceRegistryMgr_stub)
 
 vita_create_self(eboot.bin launcher UNSAFE)
 vita_create_vpk(VitaDeck.vpk ${VITA_TITLEID} eboot.bin

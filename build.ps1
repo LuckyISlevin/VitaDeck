@@ -32,7 +32,7 @@ $Libs    = 'curl', 'mbedtls', 'mbedx509', 'mbedcrypto', 'everest', 'p256m', 'z',
            'SceDisplay_stub', 'SceCtrl_stub', 'SceTouch_stub', 'SceRtc_stub', 'ScePower_stub',
            'SceAppMgr_stub', 'SceAVConfig_stub', 'SceSysmem_stub', 'SceIofilemgr_stub',
            'SceLibKernel_stub', 'SceKernelThreadMgr_stub', 'SceKernelModulemgr_stub', 'SceProcessmgr_stub',
-           'SceSysmodule_stub', 'SceNet_stub', 'SceNetCtl_stub', 'm'
+           'SceSysmodule_stub', 'SceNet_stub', 'SceNetCtl_stub', 'SceRegistryMgr_stub', 'm'
 
 $objs = @()
 foreach ($s in $Sources) {

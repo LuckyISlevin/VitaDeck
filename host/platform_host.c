@@ -72,6 +72,8 @@ int plat_net_begin(char *err, int n) { snprintf(err, n, "not available on the ho
 int plat_http_download(const char *url, const char *path) { (void)url; (void)path; return -1; }
 void plat_net_end(void) {}
 int plat_launch(const char *id) { printf("launch %s\n", id); return 0; }
+int plat_bright_raw = -1;
+int plat_get_brightness(void) { return -1; }
 int plat_set_brightness(int p) { (void)p; return 0; }
 int plat_get_volume(void) { return 18; }
 int plat_set_volume(int v) { (void)v; return 0; }
